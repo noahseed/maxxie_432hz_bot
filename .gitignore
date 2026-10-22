@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+.agents/
+.aws/
+.codex/
+.env.*
+!.env.example
+*.pem
+*.key

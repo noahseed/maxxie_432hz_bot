@@ -1,0 +1,24 @@
+[Unit]
+Description=Accueil Telegram Maxxie 432Hz
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=maxxie-bot
+Group=maxxie-bot
+WorkingDirectory=/opt/maxxie-bot
+EnvironmentFile=/etc/maxxie-bot.env
+ExecStart=/usr/bin/python3 /opt/maxxie-bot/bot.py
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
