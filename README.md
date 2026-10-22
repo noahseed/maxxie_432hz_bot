@@ -133,9 +133,9 @@ sudo journalctl -u maxxie-bot -n 100 --no-pager
 
 Un verrou de fichier exclusif refuse une seconde instance avant toute récupération des tâches. Une seule instance du bot doit utiliser les bases et le jeton. Une fois cette version déployée, conserver les bases lors des mises à jour pour préserver le suivi et la prévention des doublons.
 
-## Commande privée /statut
+## Commandes privées /statut et /status
 
-`OWNER_USER_ID` désigne le seul compte autorisé à consulter `/statut` (à défaut, l'identifiant privé `NOTIFY_CHAT_ID` est utilisé). Les administrateurs du groupe n'obtiennent pas ce droit automatiquement. La commande fonctionne uniquement en privé et indique le nombre de tâches en attente, en cours, terminées, échouées ou incertaines, les identifiants des cinq dernières tâches à vérifier et la date de la dernière sauvegarde contrôlée. Une sauvegarde de plus de 36 heures, ou dont le dossier a disparu, déclenche un avertissement dans la réponse. Aucun contenu des messages, jeton ou chemin privé n'est transmis.
+`/status` est un alias de `/statut` ; les deux commandes affichent le même diagnostic. `OWNER_USER_ID` désigne le seul compte autorisé à consulter `/statut` (à défaut, l'identifiant privé `NOTIFY_CHAT_ID` est utilisé). Les administrateurs du groupe n'obtiennent pas ce droit automatiquement. La commande fonctionne uniquement en privé et indique le nombre de tâches en attente, en cours, terminées, échouées ou incertaines, les identifiants des cinq dernières tâches à vérifier et la date de la dernière sauvegarde contrôlée. Une sauvegarde de plus de 36 heures, ou dont le dossier a disparu, déclenche un avertissement dans la réponse. Aucun contenu des messages, jeton ou chemin privé n'est transmis.
 
 ## Sauvegardes quotidiennes et restauration
 

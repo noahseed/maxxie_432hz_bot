@@ -83,16 +83,20 @@ class OperationsTests(unittest.TestCase):
         raw = Mock()
         bot = Bot(raw, "TestBot", "-42", "url", "Règles", owner_user_id=99)
         bot.background = self.store
-        for uid in (7, 99):
-            bot.handle({"message": {"chat": {"id": uid, "type": "private"},
-                                    "from": {"id": uid}, "text": "/statut"}})
-        self.assertIn("réservée", raw.call.call_args_list[0].kwargs["text"])
-        self.assertNotIn("En attente", raw.call.call_args_list[0].kwargs["text"])
-        self.assertIn("En attente", raw.call.call_args_list[1].kwargs["text"])
-        raw.reset_mock()
-        bot.handle({"message": {"chat": {"id": -42, "type": "supergroup"},
-                                "from": {"id": 99}, "text": "/statut"}})
-        raw.call.assert_not_called()
+        for command in ("/statut", "/status", "/statut@TestBot", "/status@TestBot", "/STATUS"):
+            with self.subTest(command=command):
+                raw.reset_mock()
+                for uid in (7, 99):
+                    bot.handle({"message": {"chat": {"id": uid, "type": "private"},
+                                            "from": {"id": uid}, "text": command}})
+                self.assertIn("réservée", raw.call.call_args_list[0].kwargs["text"])
+                self.assertNotIn("En attente", raw.call.call_args_list[0].kwargs["text"])
+                self.assertIn("En attente", raw.call.call_args_list[1].kwargs["text"])
+                raw.reset_mock()
+                bot.handle({"message": {"chat": {"id": -42, "type": "supergroup"},
+                                        "from": {"id": 99}, "text": command}})
+                raw.call.assert_not_called()
+
 
 
 class BackupTests(unittest.TestCase):
