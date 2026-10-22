@@ -9,9 +9,20 @@ DEFAULT_MODEL = "gpt-5.6-terra"
 
 
 class AIError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, reason=None):
         self.code = code
-        super().__init__(f"OpenAI indisponible (code {code})")
+        reasons = {
+            "insufficient_quota": "Quota API insuffisant : vérifiez les crédits et les limites du compte API.",
+            "credit_balance_exhausted": "Crédits API épuisés : rechargez le solde dans la facturation OpenAI.",
+            "organization_spend_limit_exceeded": "Plafond de dépense de l'organisation atteint.",
+            "project_spend_limit_exceeded": "Plafond de dépense du projet atteint.",
+            "organization_usage_limit_exceeded": "Limite d'utilisation de l'organisation atteinte.",
+            "rate_limit_exceeded": "Limite temporaire de requêtes atteinte : patientez avant de réessayer.",
+            "slow_down": "Cadence trop élevée : patientez avant de réessayer.",
+        }
+        self.reason = reason if isinstance(reason, str) and reason in reasons else None
+        self.guidance = reasons.get(self.reason, "Vérifiez la clé, la facturation et l'accès au modèle.")
+        super().__init__(f"OpenAI indisponible (code {code}, motif {self.reason or 'inconnu'})")
 
 
 class AssistantAI:
@@ -62,8 +73,16 @@ class AssistantAI:
                 result = json.load(response)
         except HTTPError as error:
             # Ne pas afficher les corps d'erreur ou les en-têtes (secrets/contenu).
-            error.close()
-            raise AIError(error.code) from None
+            reason = None
+            try:
+                detail = json.loads(error.read(65536))
+                if isinstance(detail, dict) and isinstance(detail.get("error"), dict):
+                    reason = detail["error"].get("code") or detail["error"].get("type")
+            except (ValueError, OSError, TypeError):
+                pass
+            finally:
+                error.close()
+            raise AIError(error.code, reason) from None
         except (URLError, TimeoutError, OSError, ValueError):
             raise AIError(0) from None
         if not isinstance(result, dict) or result.get("status") != "completed":

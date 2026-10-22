@@ -1,4 +1,5 @@
 import json
+import io
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -9,6 +10,19 @@ from bot import Bot
 
 
 class OpenAITests(unittest.TestCase):
+    @patch("assistant_ai.urlopen")
+    def test_quota_error_reports_only_known_reason(self, open_url):
+        for reason, expected in (("insufficient_quota", "insufficient_quota"),
+                                 ("rate_limit_exceeded", "rate_limit_exceeded"),
+                                 ("secret-value", None)):
+            body = io.BytesIO(json.dumps({"error": {"code": reason, "message": "secret-key"}}).encode())
+            open_url.side_effect = HTTPError("url", 429, "secret", {}, body)
+            with self.assertRaises(AIError) as caught:
+                AssistantAI("secret").answer(7, "Question", "Règles", "url")
+            self.assertEqual(caught.exception.reason, expected)
+            self.assertNotIn("secret", str(caught.exception))
+            self.assertNotIn("secret", caught.exception.guidance)
+
     @patch("assistant_ai.urlopen")
     def test_response_payload_and_text_extraction(self, open_url):
         response = open_url.return_value.__enter__.return_value

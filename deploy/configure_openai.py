@@ -28,7 +28,7 @@ def main():
         AssistantAI(key, model).answer(0, "Comment rejoindre le groupe ?", "Respectez les membres.",
                                        config.get("GROUP_URL", "https://t.me/Maxxie_432Hz"))
     except AIError as error:
-        raise SystemExit(f"Test échoué (code {error.code}). Vérifiez la clé, la facturation et l'accès au modèle. Configuration inchangée.") from None
+        raise SystemExit(f"Test échoué (code {error.code}, motif {error.reason or 'inconnu'}). {error.guidance} Configuration inchangée.") from None
     updates = {"OPENAI_API_KEY": key, "OPENAI_MODEL": model,
                "OPENAI_HOURLY_LIMIT": config.get("OPENAI_HOURLY_LIMIT") or "60"}
     lines = [line for line in source.splitlines()
