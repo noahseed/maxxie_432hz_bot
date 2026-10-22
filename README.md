@@ -91,7 +91,13 @@ Le bot doit être administrateur du **supergroupe** avec le droit « Ajouter des
 
 Après modification de la liste, redémarrer le service. La promotion se déclenche quand le compte autorisé rejoint le groupe, lors d'un événement de statut ou lorsqu'il envoie `/start` en privé au bot s'il est déjà membre. Les messages ordinaires du groupe peuvent également déclencher la reconnaissance. Un compte absent du groupe n'est pas promu. Une liste vide désactive la fonction. Retirer un identifiant de la liste empêche les promotions futures mais ne retire pas un rôle déjà accordé : le propriétaire doit le retirer dans Telegram. Une rétrogradation manuelle d'un compte encore autorisé peut entraîner une nouvelle promotion ; retirer d'abord son identifiant de la liste.
 
-## Tests
+## Publication des MP3
+
+Un administrateur (ou le propriétaire) du groupe peut envoyer un MP3 en privé au bot : celui-ci copie le message dans le groupe, avec sa légende, puis confirme la publication en privé. Le statut d'administrateur est vérifié auprès de Telegram à chaque envoi ; la liste de promotion automatique ne suffit pas à autoriser une publication.
+
+Les MP3 sont acceptés comme audio ou document, selon leur extension `.mp3` (ou leur type `audio/mpeg` si aucun nom n'est fourni). Le fichier n'est ni téléchargé sur le VPS ni converti. Un MP3 envoyé comme document reste un document. Les autres fichiers audio sont refusés. Le bot doit pouvoir publier dans le groupe.
+
+## Vérification locale
 
 ```bash
 python3 -m unittest discover -s tests -v

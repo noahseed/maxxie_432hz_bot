@@ -69,6 +69,57 @@ class WelcomeTests(unittest.TestCase):
             self.bot.private_welcome(7)
 
 
+class PublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.api = Mock()
+        self.api.call.return_value = {"status": "administrator"}
+        self.bot = Bot(self.api, "MaxxieBot", "-10042", "https://t.me/Maxxie_432Hz", "Règles")
+        self.message = {"chat": {"id": 7, "type": "private"}, "from": {"id": 7},
+                        "message_id": 42, "audio": {"file_name": "Chanson.MP3"},
+                        "caption": "Ma légende"}
+
+    def test_admin_audio_is_copied_without_changing_caption(self):
+        self.bot.handle({"message": self.message})
+        self.assertEqual(self.api.call.call_args_list[0].args, ("getChatMember",))
+        self.api.call.assert_any_call("copyMessage", chat_id="-10042", from_chat_id=7, message_id=42)
+        self.api.call.assert_called_with("sendMessage", chat_id=7, text="MP3 publié dans le groupe ✅")
+
+    def test_owner_document_mp3_is_accepted(self):
+        self.api.call.return_value = {"status": "creator"}
+        self.message["document"] = self.message.pop("audio")
+        self.bot.handle({"message": self.message})
+        self.api.call.assert_any_call("copyMessage", chat_id="-10042", from_chat_id=7, message_id=42)
+
+    def test_non_admin_even_allowlisted_cannot_publish(self):
+        self.bot.admin_ids = {7}
+        for status in ("member", "restricted", "left", "kicked"):
+            self.api.reset_mock()
+            self.api.call.return_value = {"status": status}
+            self.bot.handle({"message": self.message})
+            self.assertNotIn("copyMessage", [call.args[0] for call in self.api.call.call_args_list])
+
+    def test_other_audio_formats_are_rejected(self):
+        self.message["audio"] = {"file_name": "chanson.m4a", "mime_type": "audio/mp4"}
+        self.bot.handle({"message": self.message})
+        self.assertNotIn("copyMessage", [call.args[0] for call in self.api.call.call_args_list])
+
+    def test_verification_failure_never_publishes(self):
+        self.api.call.side_effect = TelegramError(0)
+        with self.assertRaises(TelegramError):
+            self.bot.handle({"message": self.message})
+        self.assertEqual(self.api.call.call_count, 1)
+
+    def test_failed_copy_does_not_confirm_success(self):
+        self.api.call.side_effect = [{"status": "administrator"}, TelegramError(403), {}]
+        self.bot.handle({"message": self.message})
+        self.assertIn("n'a pas pu", self.api.call.call_args.kwargs["text"])
+
+    def test_confirmation_failure_does_not_retry_publication(self):
+        self.api.call.side_effect = [{"status": "administrator"}, {}, TelegramError(0)]
+        self.bot.handle({"message": self.message})
+        self.assertEqual(sum(call.args[0] == "copyMessage" for call in self.api.call.call_args_list), 1)
+
+
 class PromotionTests(unittest.TestCase):
     def setUp(self):
         self.api = Mock()

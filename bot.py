@@ -93,6 +93,40 @@ class Bot:
     def show_rules(self, chat_id):
         self.api.call("sendMessage", chat_id=chat_id, text=self.rules)
 
+    def publish_mp3(self, message):
+        chat_id = message["chat"]["id"]
+        user = message.get("from", {})
+        if not user.get("id") or user.get("is_bot"):
+            return
+        # Vérifier le statut réel, sans promouvoir un compte pour cet envoi.
+        member = self.api.call("getChatMember", chat_id=self.group_id, user_id=user["id"])
+        if member["status"] not in ("creator", "administrator"):
+            self.api.call("sendMessage", chat_id=chat_id,
+                          text="Seuls les administrateurs du groupe peuvent publier un MP3 via le bot.")
+            return
+        media = message.get("audio") or message.get("document") or {}
+        filename = media.get("file_name", "").lower()
+        if not (filename.endswith(".mp3") or (not filename and media.get("mime_type") == "audio/mpeg")):
+            self.api.call("sendMessage", chat_id=chat_id,
+                          text="Envoyez un fichier au format MP3 (.mp3).")
+            return
+        try:
+            # Copier le message conserve fichier, légende et métadonnées,
+            # sans téléchargement sur le VPS ni mention de transfert.
+            self.api.call("copyMessage", chat_id=self.group_id,
+                          from_chat_id=chat_id, message_id=message["message_id"])
+        except TelegramError as error:
+            if error.code not in (400, 403):
+                raise
+            self.api.call("sendMessage", chat_id=chat_id,
+                          text="Le MP3 n'a pas pu être publié. Vérifiez que le bot peut publier dans le groupe.")
+            return
+        try:
+            self.api.call("sendMessage", chat_id=chat_id, text="MP3 publié dans le groupe ✅")
+        except TelegramError:
+            # Une confirmation privée en échec ne doit pas republier le MP3.
+            LOG.warning("MP3 publié, mais confirmation privée impossible.")
+
     def handle(self, update):
         callback = update.get("callback_query")
         if callback:
@@ -110,6 +144,9 @@ class Bot:
         chat = message.get("chat", {})
         if chat.get("type") == "private":
             user = message.get("from", {})
+            if "audio" in message or "document" in message:
+                self.publish_mp3(message)
+                return
             if message.get("text", "").split(maxsplit=1)[0:1] == ["/id"]:
                 self.api.call("sendMessage", chat_id=chat["id"],
                               text=f"Votre identifiant Telegram : {user['id']}")
