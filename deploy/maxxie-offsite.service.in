@@ -1,0 +1,8 @@
+[Unit]
+Description=Copie SSH chiffrée des sauvegardes Maxxie vers cet ordinateur
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 "@PROJECT_DIR@/offsite_pull.py" --key "@PROJECT_DIR@/backups/keys/backup-private.pem" --destination "@PROJECT_DIR@/backups/offsite"
+UMask=0077
+TimeoutStartSec=180

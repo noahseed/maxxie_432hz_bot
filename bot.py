@@ -9,6 +9,7 @@ from http.client import HTTPSConnection, HTTPException
 import signal
 from pathlib import Path
 import time
+from datetime import datetime, timezone
 
 from reliability import JournalAPI, READ_METHODS, TaskStore, TelegramError, Worker
 
@@ -149,7 +150,15 @@ class Bot:
             try:
                 metadata = json.loads(marker.read_text(encoding="utf-8"))
                 lines.append(f"Dernière sauvegarde vérifiée : {metadata['created_at']}")
-            except (OSError, ValueError, KeyError):
+                created = datetime.fromisoformat(metadata["created_at"])
+                if created.tzinfo is None:
+                    raise ValueError("Date sans fuseau")
+                if (datetime.now(timezone.utc) - created).total_seconds() > 36 * 3600:
+                    lines.append("⚠️ Sauvegarde ancienne : plus de 36 heures. Vérifiez le service de sauvegarde.")
+                snapshot = metadata.get("snapshot", "")
+                if not snapshot or Path(snapshot).name != snapshot or not (self.backup_dir / snapshot).is_dir():
+                    lines.append("⚠️ Le dossier de la dernière sauvegarde est introuvable.")
+            except (OSError, ValueError, KeyError, TypeError):
                 lines.append("État de sauvegarde illisible.")
         else:
             lines.append("Aucune sauvegarde vérifiée disponible.")
@@ -369,7 +378,8 @@ def main():
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.set())
     api = Telegram(token, ipv4_only=os.environ.get("TELEGRAM_IPV4_ONLY", "1") == "1")
-    store = TaskStore(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"))
+    store = TaskStore(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"),
+                      owner_user_id=int(owner_user_id) if owner_user_id else None)
     workers = []
     try:
         username = wait_for_startup(api, stop)

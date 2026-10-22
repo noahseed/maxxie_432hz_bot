@@ -23,9 +23,11 @@ class UncertainAction(Exception):
 
 
 class TaskStore:
-    def __init__(self, path):
+    def __init__(self, path, command_limit=5, command_window=10, owner_user_id=None):
         self.lock = threading.RLock()
         self.instance_lock = None
+        self.command_limit, self.command_window = command_limit, command_window
+        self.owner_user_id = owner_user_id
         if str(path) != ":memory:":
             self.instance_lock = open(str(path) + ".lock", "a", encoding="utf-8")
             try:
@@ -38,6 +40,7 @@ class TaskStore:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value INTEGER);
+            CREATE TABLE IF NOT EXISTS command_limits (user_id INTEGER PRIMARY KEY, started REAL, count INTEGER);
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY, update_id INTEGER UNIQUE, kind TEXT NOT NULL,
                 payload TEXT NOT NULL, dedupe TEXT, lane INTEGER NOT NULL,
@@ -76,16 +79,25 @@ class TaskStore:
         fingerprint = hashlib.sha256(("step:" + step).encode()).hexdigest()
         legacy = hashlib.sha256(json.dumps([method, params], sort_keys=True).encode()).hexdigest()
         with self.lock, self.db:
-            row = self.db.execute("SELECT request FROM actions WHERE task_id=? AND fingerprint=?",
+            row = self.db.execute("SELECT request,status FROM actions WHERE task_id=? AND fingerprint=?",
                                   (task_id, fingerprint)).fetchone()
             if row is None:
                 # Compatibilité avec le journal de la version précédente.
                 self.db.execute("UPDATE actions SET fingerprint=? WHERE task_id=? AND fingerprint=?",
                                 (fingerprint, task_id, legacy))
-                row = self.db.execute("SELECT request FROM actions WHERE task_id=? AND fingerprint=?",
+                row = self.db.execute("SELECT request,status FROM actions WHERE task_id=? AND fingerprint=?",
                                       (task_id, fingerprint)).fetchone()
             if row and row[0]:
                 saved = json.loads(row[0])
+                if saved[0] != method or any(saved[1].get(key) != params.get(key)
+                                             for key in ("chat_id", "user_id", "from_chat_id", "message_id")):
+                    raise PermissionError("La destination ou l'identité de l'action a changé")
+                if method == "promoteChatMember" and row[1] == "pending":
+                    # Un refus explicite 429 n'a pas appliqué les anciens droits.
+                    # Utiliser ceux recalculés depuis la configuration actuelle.
+                    self.db.execute("UPDATE actions SET request=? WHERE task_id=? AND fingerprint=?",
+                                    (json.dumps([method, params]), task_id, fingerprint))
+                    return fingerprint, method, params
                 return fingerprint, saved[0], saved[1]
             request = json.dumps([method, params])
             self.db.execute("INSERT INTO actions(task_id,fingerprint,status,request) VALUES (?,?,'pending',?) "
@@ -103,6 +115,24 @@ class TaskStore:
         with self.lock, self.db:
             offset = self.offset()
             for update in updates:
+                if update["update_id"] < offset:
+                    continue
+                message = update.get("message", {})
+                chat = message.get("chat", {})
+                user_id = message.get("from", {}).get("id", chat.get("id"))
+                limited = False
+                if chat.get("type") == "private" and "text" in message and user_id != self.owner_user_id:
+                    now = time.time()
+                    row = self.db.execute("SELECT started,count FROM command_limits WHERE user_id=?", (user_id,)).fetchone()
+                    if row and now - row[0] < self.command_window:
+                        limited = row[1] >= self.command_limit
+                        if not limited:
+                            self.db.execute("UPDATE command_limits SET count=count+1 WHERE user_id=?", (user_id,))
+                    else:
+                        self.db.execute("INSERT OR REPLACE INTO command_limits VALUES (?,?,1)", (user_id, now))
+                if limited:
+                    offset = max(offset, update["update_id"] + 1)
+                    continue
                 self.db.execute("INSERT OR IGNORE INTO tasks(update_id,kind,payload,lane,updated) VALUES (?,?,?,?,?)",
                                 (update["update_id"], "update", json.dumps(update), 0, time.time()))
                 offset = max(offset, update["update_id"] + 1)
@@ -152,6 +182,7 @@ class TaskStore:
         # Garder le diagnostic 30 jours. Les updates plus anciens restent exclus
         # par l'offset persistant, même une fois leur journal nettoyé.
         with self.lock, self.db:
+            self.db.execute("DELETE FROM command_limits WHERE started<?", (time.time() - 86400,))
             self.db.execute("DELETE FROM actions WHERE task_id IN (SELECT id FROM tasks "
                             "WHERE status NOT IN ('pending','running') AND updated<?)", (time.time() - 30 * 86400,))
             self.db.execute("DELETE FROM tasks WHERE status NOT IN ('pending','running') AND updated<?",

@@ -9,6 +9,8 @@ from pathlib import Path
 import shutil
 import sqlite3
 import tempfile
+import subprocess
+import tarfile
 
 
 def check_database(path):
@@ -55,6 +57,22 @@ def restore(snapshot, destination):
     return destination
 
 
+def encrypt_snapshot(snapshot, certificate, output):
+    """CMS AES-256-GCM : seul le certificat public est présent sur le VPS."""
+    with tempfile.TemporaryDirectory(prefix=".encrypt-", dir=output.parent) as staging:
+        archive = Path(staging) / "snapshot.tar.gz"
+        encrypted = Path(staging) / "snapshot.enc"
+        with tarfile.open(archive, "w:gz") as tar:
+            for name in ("manifest.json", "tasks.sqlite3", "visitors.sqlite3"):
+                tar.add(snapshot / name, arcname=name)
+        subprocess.run(["openssl", "cms", "-encrypt", "-binary", "-aes-256-gcm",
+                        "-in", str(archive), "-out", str(encrypted), "-outform", "DER",
+                        "-recip", str(certificate), "-keyopt", "rsa_padding_mode:oaep"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        os.chmod(encrypted, 0o600)
+        os.replace(encrypted, output)
+
+
 def create_backup(tasks, visitors, root, keep=14):
     if keep < 1:
         raise ValueError("La rétention doit être positive")
@@ -70,15 +88,17 @@ def create_backup(tasks, visitors, root, keep=14):
         # Vérifier réellement la restauration sans toucher aux bases actives.
         with tempfile.TemporaryDirectory(prefix=".restore-check-", dir=root) as staging:
             restore(temporary, Path(staging) / "restored")
-        final = root / ("backup-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + temporary.name[-8:])
+        final = root / ("backup-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + temporary.name[-8:])
         temporary.rename(final)
         marker = root / ".latest.pending"
         marker.write_text(json.dumps({**manifest, "snapshot": final.name}), encoding="utf-8")
         os.replace(marker, root / "latest.json")
-        snapshots = sorted((path for path in root.glob("backup-*") if path.is_dir() and not path.is_symlink()),
-                           key=lambda path: path.name, reverse=True)
-        for old in snapshots[keep:]:
+        snapshots = sorted((path for path in root.glob("backup-*") if path != final and path.is_dir() and not path.is_symlink()),
+                           key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        for old in snapshots[keep - 1:]:
             shutil.rmtree(old)
+        if not final.is_dir():
+            raise RuntimeError("La dernière sauvegarde a disparu pendant la rotation")
         return final
     finally:
         if temporary.exists():
@@ -101,6 +121,9 @@ def main():
                                os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"),
                                os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"),
                                int(os.environ.get("BACKUP_KEEP", "14")))
+        certificate = os.environ.get("BACKUP_CERT", "").strip()
+        if certificate:
+            encrypt_snapshot(result, Path(certificate), result.parent / "offsite-latest.enc")
         print(f"Sauvegarde et test de restauration réussis : {result.name}")
 
 

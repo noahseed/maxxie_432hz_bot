@@ -113,7 +113,7 @@ Les événements et actions en attente sont enregistrés dans `STATE_DB` (par d�
 
 Une erreur 429 reprogramme la tâche après le délai `retry_after`. Les étapes déjà confirmées ne sont pas rejouées : si la copie du MP3 a réussi mais sa confirmation privée est refusée temporairement, seule cette dernière sera renvoyée. Les erreurs temporaires de lecture sont également retentées, jusqu'à 8 tentatives par tâche. Les refus permanents sont journalisés sans boucle infinie.
 
-Chaque action possède un identifiant d'étape stable. Sa requête est enregistrée avant son envoi, puis son résultat confirmé : une reprise conserve le contenu prévu initialement, même si welcome.txt ou les règles ont été modifiés entre-temps. Les requêtes enregistrées sont effacées à la fin de la tâche. Si le service s'arrête pendant un envoi ou si la connexion coupe sans confirmation, l'état devient **incertain** : aucun renvoi automatique de cette action, car Telegram a peut-être accepté le fichier. Cette précaution réduit les doublons mais ne garantit pas une livraison exactement une fois. Vérifier le groupe avant de renvoyer un MP3 signalé comme incertain. Les appels de lecture restent retentables.
+Chaque action possède un identifiant d'étape stable. Sa requête est enregistrée avant son envoi, puis son résultat confirmé : une reprise conserve le contenu prévu initialement, même si welcome.txt ou les règles ont été modifiés entre-temps. Les requêtes enregistrées sont effacées à la fin de la tâche. Les droits d’une promotion refusée temporairement sont recalculés à chaque tentative ; un changement de destinataire ou d’identité annule la reprise, pour ne pas réutiliser une ancienne autorisation. Si le service s'arrête pendant un envoi ou si la connexion coupe sans confirmation, l'état devient **incertain** : aucun renvoi automatique de cette action, car Telegram a peut-être accepté le fichier. Cette précaution réduit les doublons mais ne garantit pas une livraison exactement une fois. Vérifier le groupe avant de renvoyer un MP3 signalé comme incertain. Les appels de lecture restent retentables.
 
 Les connexions HTTPS sont réutilisées. Les appels d'action dépassant une seconde sont journalisés avec leur méthode et leur durée, sans jeton ni contenu des messages. L'acquittement d'un bouton est facultatif : son échec réseau ou son expiration n'empêche pas l'affichage des règles. Le long polling renvoie immédiatement les nouveaux événements : ses 30 secondes d'attente ne sont pas un délai imposé aux réponses.
 
@@ -135,13 +135,13 @@ Un verrou de fichier exclusif refuse une seconde instance avant toute récupéra
 
 ## Commande privée /statut
 
-`OWNER_USER_ID` désigne le seul compte autorisé à consulter `/statut` (à défaut, l'identifiant privé `NOTIFY_CHAT_ID` est utilisé). Les administrateurs du groupe n'obtiennent pas ce droit automatiquement. La commande fonctionne uniquement en privé et indique le nombre de tâches en attente, en cours, terminées, échouées ou incertaines, les identifiants des cinq dernières tâches à vérifier et la date de la dernière sauvegarde contrôlée. Aucun contenu des messages, jeton ou chemin privé n'est transmis.
+`OWNER_USER_ID` désigne le seul compte autorisé à consulter `/statut` (à défaut, l'identifiant privé `NOTIFY_CHAT_ID` est utilisé). Les administrateurs du groupe n'obtiennent pas ce droit automatiquement. La commande fonctionne uniquement en privé et indique le nombre de tâches en attente, en cours, terminées, échouées ou incertaines, les identifiants des cinq dernières tâches à vérifier et la date de la dernière sauvegarde contrôlée. Une sauvegarde de plus de 36 heures, ou dont le dossier a disparu, déclenche un avertissement dans la réponse. Aucun contenu des messages, jeton ou chemin privé n'est transmis.
 
 ## Sauvegardes quotidiennes et restauration
 
 Le timer `maxxie-backup.timer` lance une sauvegarde quotidienne vers **03 h 30, heure de Paris**, avec un décalage aléatoire de dix minutes au maximum. `Persistent=true` rattrape un déclenchement manqué après un arrêt du VPS. Les deux bases sont copiées avec l'API SQLite, y compris leurs données WAL, puis contrôlées avec `quick_check` et SHA-256. Chaque sauvegarde est réellement restaurée dans un dossier temporaire avant validation.
 
-Les sauvegardes restent **sur le VPS**, dans `BACKUP_DIR` (par défaut `/var/lib/maxxie-bot/backups`), accessible uniquement au compte du service. `BACKUP_KEEP=14` conserve les quatorze dernières sauvegardes réussies. Ces copies locales ne couvrent pas la perte totale du VPS. Les deux bases sont sauvegardées successivement, pas dans une transaction commune.
+Les sauvegardes restent **sur le VPS**, dans `BACKUP_DIR` (par défaut `/var/lib/maxxie-bot/backups`), accessible uniquement au compte du service. `BACKUP_KEEP=14` conserve les quatorze dernières sauvegardes réussies. La nouvelle copie est explicitement protégée de la rotation, même si plusieurs sauvegardes sont créées dans la même seconde. Ces copies locales ne couvrent pas la perte totale du VPS. Les deux bases sont sauvegardées successivement, pas dans une transaction commune.
 
 Installation du timer après installation des scripts :
 
@@ -163,6 +163,33 @@ sudo -u maxxie-bot python3 /opt/maxxie-bot/backups.py --restore /var/lib/maxxie-
 La commande vérifie les empreintes, refuse tout écrasement et ne touche pas aux bases actives. Les tâches en attente d'une ancienne sauvegarde sont neutralisées en état `uncertain` : elles ont peut-être été exécutées depuis la sauvegarde. Les réactiver aveuglément pourrait republier des MP3.
 
 Pour rétablir réellement ces bases : arrêter le timer, le service de sauvegarde et le bot ; conserver à part les bases actuelles et leurs éventuels fichiers `-wal`/`-shm` ; installer les deux fichiers restaurés à leurs chemins configurés, avec propriétaire `maxxie-bot` et permissions `600` ; redémarrer le bot et le timer. Ne jamais mélanger une base restaurée avec un ancien WAL. Vérifier `/statut`, les journaux et le groupe avant de traiter manuellement les tâches incertaines. La restauration revient à la date de la sauvegarde et peut aussi faire oublier des visiteurs signalés depuis.
+
+## Protection contre les commandes répétées
+
+La réception conserve au maximum cinq messages textuels privés par utilisateur sur une fenêtre de dix secondes. Les suivants sont ignorés sans réponse supplémentaire, pour ne pas amplifier un spam. Le compteur survit aux redémarrages et les reprises d'une même mise à jour ne consomment pas de nouveau quota. Le propriétaire configuré dans `OWNER_USER_ID` et les fichiers MP3 ne sont pas limités. Les anciennes entrées de compteur sont nettoyées après une journée.
+
+## Copie chiffrée sur l'ordinateur via SSH
+
+Le certificat public `BACKUP_CERT=/opt/maxxie-bot/backup-public.pem` permet au VPS de produire `offsite-latest.enc` après chaque sauvegarde. Le chiffrement utilise OpenSSL CMS, AES-256-GCM et RSA-OAEP. **La clé privée reste sur l'ordinateur** ; elle n'est ni envoyée au VPS ni publiée dans Git.
+
+Sur cet ordinateur, la clé est dans `backups/keys/backup-private.pem`, le certificat dans `backups/keys/backup-public.pem` et les copies dans `backups/offsite/`, sous le dossier du projet. Le dossier `backups/` est privé et ignoré par Git. Conserver séparément une copie sûre de la clé privée : sans elle les archives sont indéchiffrables.
+
+`offsite_pull.py` récupère uniquement l'archive chiffrée via SSH, la déchiffre dans un dossier temporaire privé et vérifie sa restauration et ses empreintes avant de la conserver. Les données en clair du test sont supprimées ensuite. Les quatorze dernières archives distinctes sont conservées ; aucune nouvelle copie identique n'est ajoutée.
+
+```bash
+python3 offsite_pull.py --key backups/keys/backup-private.pem --destination backups/offsite
+```
+
+Le timer utilisateur `maxxie-offsite.timer` sur l'ordinateur vérifie les nouvelles copies chaque heure, avec un décalage maximal de cinq minutes. Il rattrape une échéance manquée lorsque la session et l'ordinateur redeviennent disponibles. La connexion SSH par clé doit fonctionner sans interaction ; si la clé SSH nécessite un agent, celui-ci doit être accessible au gestionnaire de services utilisateur.
+
+```bash
+systemctl --user status maxxie-offsite.timer
+journalctl --user -u maxxie-offsite.service -n 20 --no-pager
+```
+
+Pour une autre installation, remplacer `@PROJECT_DIR@` dans `deploy/maxxie-offsite.service.in` par le chemin absolu du projet et installer le service et `deploy/maxxie-offsite.timer` dans `~/.config/systemd/user/`. Le timer du VPS et celui de l'ordinateur sont indépendants : si l'ordinateur reste éteint, aucune nouvelle copie hors VPS n'est faite.
+
+Pour utiliser une archive locale en restauration, la déchiffrer d'abord avec `openssl cms -decrypt -binary -inform DER -in COPIE.enc -inkey backups/keys/backup-private.pem -out snapshot.tar.gz`, puis appliquer la procédure de restauration ci-dessus sur les trois fichiers vérifiés de l'archive. Le script effectue déjà ce test automatiquement pour chaque récupération.
 
 ## Tests
 
