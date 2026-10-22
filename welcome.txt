@@ -1,6 +1,7 @@
 Bienvenue chez Maxxie 432Hz ! 🎵
 
 Ce Bot gère le groupe "Maxxie 432Hz".
+
 Il s'agit d'un groupe de partage de musiques converties en 432Hz (Variétés Françaises et Internationales)
 
 Choisissez une option :
