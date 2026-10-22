@@ -25,10 +25,10 @@ class VisitorNotificationTests(unittest.TestCase):
     def test_first_start_notifies_owner_and_welcomes_visitor(self):
         self.start()
         calls = self.api.call.call_args_list
-        self.assertEqual(calls[0].kwargs["chat_id"], 99)
-        self.assertIn("@camille", calls[0].kwargs["text"])
-        self.assertIn("7", calls[0].kwargs["text"])
-        self.assertEqual(calls[1].kwargs["chat_id"], 7)
+        self.assertEqual(calls[0].kwargs["chat_id"], 7)
+        self.assertEqual(calls[1].kwargs["chat_id"], 99)
+        self.assertIn("@camille", calls[1].kwargs["text"])
+        self.assertIn("7", calls[1].kwargs["text"])
         self.start()
         self.assertEqual(sum(call.kwargs.get("chat_id") == 99 for call in self.api.call.call_args_list), 1)
 
@@ -55,9 +55,9 @@ class VisitorNotificationTests(unittest.TestCase):
         self.assertTrue(self.visitors.contains(8))
 
     def test_failed_notification_does_not_block_welcome_and_can_retry(self):
-        self.api.call.side_effect = [TelegramError(403), {}]
+        self.api.call.side_effect = [{}, TelegramError(403)]
         self.start()
-        self.assertEqual(self.api.call.call_args.kwargs["chat_id"], 7)
+        self.assertEqual(self.api.call.call_args_list[0].kwargs["chat_id"], 7)
         self.assertFalse(self.visitors.contains(7))
         self.api.call.side_effect = None
         self.start()

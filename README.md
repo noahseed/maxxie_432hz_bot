@@ -79,7 +79,7 @@ Si l'utilisateur système existe déjà, ne pas répéter `useradd`. Pour une mi
 
 Le service utilise le long polling : seules des connexions HTTPS sortantes vers Telegram sont nécessaires. Aucun serveur web, certificat TLS ou port entrant supplémentaire n'est requis. Ne lancer qu'une instance avec ce jeton ; un webhook déjà configuré doit être retiré avant utilisation. Le bot refuse de supprimer automatiquement un webhook existant.
 
-Le bot ne conserve ni profils ni messages sur disque. Telegram conserve les mises à jour en attente : elles peuvent être traitées au démarrage. Une interruption après l'envoi d'un message et avant sa confirmation peut occasionner un doublon.
+Le bot conserve uniquement les identifiants des visiteurs déjà signalés, pas leurs messages. Telegram conserve les mises à jour en attente : elles peuvent être traitées au démarrage. Une interruption après l'envoi d'un message et avant sa confirmation peut occasionner un doublon.
 
 ## Administrateurs reconnus automatiquement
 
@@ -89,7 +89,7 @@ Pour accorder également la suppression des messages et la gestion des membres (
 
 Le bot doit être administrateur du **supergroupe** avec le droit « Ajouter des administrateurs » (`can_promote_members`). Telegram ne permet cette API que pour les supergroupes et les canaux. Le profil accordé par défaut est un administrateur aux droits limités (`can_manage_chat`), capable de publier dans ce groupe réservé aux administrateurs, sans suppression de messages, bannissement ou nomination d'autres administrateurs. Le profil de modération ajoute la suppression et la gestion des membres ; il n'accorde pas la nomination d'autres administrateurs.
 
-Après modification de la liste, redémarrer le service. La promotion se déclenche quand le compte autorisé rejoint le groupe, lors d'un événement de statut ou lorsqu'il envoie `/start` en privé au bot s'il est déjà membre. Les messages ordinaires du groupe peuvent également déclencher la reconnaissance. Un compte absent du groupe n'est pas promu. Une liste vide désactive la fonction. Retirer un identifiant de la liste empêche les promotions futures mais ne retire pas un rôle déjà accordé : le propriétaire doit le retirer dans Telegram. Une rétrogradation manuelle d'un compte encore autorisé peut entraîner une nouvelle promotion ; retirer d'abord son identifiant de la liste.
+Après modification de la liste, redémarrer le service. La promotion se déclenche quand le compte autorisé rejoint le groupe, lors d'un événement de statut ou lorsqu'il envoie `/start` en privé au bot s'il est déjà membre. Un compte absent du groupe n'est pas promu. Une liste vide désactive la fonction. Retirer un identifiant de la liste empêche les promotions futures mais ne retire pas un rôle déjà accordé : le propriétaire doit le retirer dans Telegram. Une rétrogradation manuelle d'un compte encore autorisé peut entraîner une nouvelle promotion ; retirer d'abord son identifiant de la liste.
 
 ## Publication des MP3
 
@@ -102,6 +102,18 @@ Les MP3 sont acceptés comme audio ou document, selon leur extension `.mp3` (ou 
 Configurer `NOTIFY_CHAT_ID` avec l'identifiant numérique du destinataire privé, puis redémarrer le service. Le destinataire doit avoir démarré le bot et ne pas l'avoir bloqué. À son premier `/start` privé (y compris un lien `/start rules`), chaque utilisateur déclenche une notification contenant son nom affiché, son @pseudo éventuel et son identifiant Telegram. Les messages ordinaires et les commandes du groupe ne déclenchent aucune notification.
 
 Les identifiants signalés sont conservés dans `VISITORS_DB` (par défaut `/var/lib/maxxie-bot/visitors.sqlite3`). Le service systemd crée ce dossier privé avec `StateDirectory=maxxie-bot`. Seuls les identifiants sont stockés, pas les messages ni les noms. Le suivi commence à l'activation : un ancien utilisateur qui refait `/start` sera donc signalé une fois. Une notification échouée n'empêche pas l'accueil et pourra être retentée à son prochain `/start`. Une interruption entre l'envoi et l'enregistrement peut exceptionnellement entraîner un doublon.
+
+## Réactivité et réseau
+
+Le client réutilise les connexions HTTPS, avec une connexion distincte par thread. Les connexions réseau attendent au maximum 3 secondes par adresse ; la lecture des actions Telegram attend 8 secondes, celle du long polling 35 secondes pour une attente serveur de 30 secondes. Les appels de lecture peuvent être retentés une fois après une rupture de connexion ; les envois et copies ne sont pas automatiquement renvoyés par le client pour éviter une publication en double. Une interruption réseau au moment d'un envoi peut toujours laisser son résultat incertain.
+
+`TELEGRAM_IPV4_ONLY=1` est le réglage par défaut pour éviter la route IPv6 défaillante observée sur ce VPS (un simple appel avait pris 46 secondes). La résolution DNS et la validation TLS du nom `api.telegram.org` sont conservées, sans IP codée en dur. Sur un serveur avec IPv6 fonctionnel, `TELEGRAM_IPV4_ONLY=0` permet les deux familles.
+
+L'accueil privé est envoyé avant les notifications au propriétaire et les promotions. Ces tâches secondaires s'exécutent dans une file en arrière-plan, limitée à 128 tâches, avec dédoublonnage des tâches en attente. Un arrêt du service peut interrompre une tâche en attente ; un prochain `/start` ou événement de membre permettra une nouvelle tentative. Les messages ordinaires ne déclenchent plus de vérification de promotion ; les arrivées, changements de statut et `/start` restent pris en charge. L'autorisation de publier un MP3 est toujours vérifiée auprès de Telegram à chaque envoi, sans cache de droits.
+
+Les appels d'action dépassant une seconde sont journalisés avec leur méthode et leur durée, sans jeton ni contenu des messages. Un bouton expiré ne bloque plus l'affichage des règles. Le long polling renvoie immédiatement les nouvelles mises à jour : ses 30 secondes d'attente ne sont pas un délai imposé aux réponses.
+
+En cas d'erreur d'une action, la mise à jour entière n'est pas rejouée automatiquement, pour ne pas répéter une copie MP3 ou un message déjà accepté. Après une panne ou une limitation Telegram, l'utilisateur peut devoir renvoyer sa commande ; vérifier le groupe avant de renvoyer un MP3 dont le résultat est incertain. La récupération des nouvelles mises à jour continue de respecter les délais `retry_after` de Telegram.
 
 ## Tests
 

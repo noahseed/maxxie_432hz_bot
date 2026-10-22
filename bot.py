@@ -3,26 +3,84 @@ import json
 import logging
 import os
 import sqlite3
+import socket
+import threading
+from http.client import HTTPSConnection, HTTPException
+from queue import Queue, Full
 from pathlib import Path
 import time
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("maxxie")
 
 
 class StartVisitors:
     def __init__(self, path):
-        self.db = sqlite3.connect(path)
+        self.lock = threading.RLock()
+        self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS visitors (user_id INTEGER PRIMARY KEY)")
         self.db.commit()
 
     def contains(self, user_id):
-        return self.db.execute("SELECT 1 FROM visitors WHERE user_id = ?", (user_id,)).fetchone() is not None
+        with self.lock:
+            return self.db.execute("SELECT 1 FROM visitors WHERE user_id = ?", (user_id,)).fetchone() is not None
 
     def remember(self, user_id):
-        self.db.execute("INSERT OR IGNORE INTO visitors VALUES (?)", (user_id,))
-        self.db.commit()
+        with self.lock:
+            self.db.execute("INSERT OR IGNORE INTO visitors VALUES (?)", (user_id,))
+            self.db.commit()
+
+
+class BackgroundTasks:
+    """Tâches secondaires séquentielles, sans bloquer les réponses privées."""
+    def __init__(self):
+        self.queue = Queue(maxsize=128)
+        self.pending = set()
+        self.lock = threading.Lock()
+        threading.Thread(target=self._run, name="notifications", daemon=True).start()
+
+    def submit(self, function, user):
+        key = (function.__name__, user.get("id"))
+        with self.lock:
+            if key in self.pending:
+                return
+            self.pending.add(key)
+            try:
+                self.queue.put_nowait((key, function, dict(user)))
+            except Full:
+                self.pending.discard(key)
+                LOG.warning("File de tâches secondaires pleine : tâche reportée à un prochain événement.")
+
+    def _run(self):
+        while True:
+            key, function, user = self.queue.get()
+            try:
+                function(user)
+            except TelegramError as error:
+                LOG.warning("Tâche %s impossible (code %s).", key[0], error.code)
+            except Exception as error:
+                LOG.error("Tâche %s interrompue (%s).", key[0], type(error).__name__)
+            finally:
+                with self.lock:
+                    self.pending.discard(key)
+                self.queue.task_done()
+
+
+def connect_ipv4(address, timeout, source_address=None):
+    """Éviter une route IPv6 défaillante sans modifier le réseau du VPS."""
+    host, port = address
+    last_error = None
+    for family, kind, protocol, _, target in socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM):
+        connection = socket.socket(family, kind, protocol)
+        connection.settimeout(timeout)
+        try:
+            if source_address:
+                connection.bind(source_address)
+            connection.connect(target)
+            return connection
+        except OSError as error:
+            last_error = error
+            connection.close()
+    raise last_error or OSError("Aucune adresse IPv4 disponible")
 
 
 class TelegramError(Exception):
@@ -33,27 +91,61 @@ class TelegramError(Exception):
 
 
 class Telegram:
-    def __init__(self, token):
-        self.base = f"https://api.telegram.org/bot{token}/"
+    def __init__(self, token, ipv4_only=True):
+        self.path = f"/bot{token}/"
+        self.ipv4_only = ipv4_only
+        self.local = threading.local()
+
+    def close(self):
+        connection = getattr(self.local, "connection", None)
+        if connection:
+            connection.close()
+            self.local.connection = None
 
     def call(self, method, **params):
-        request = Request(self.base + method, json.dumps(params).encode(),
-                          {"Content-Type": "application/json"})
-        try:
-            with urlopen(request, timeout=45) as response:
-                result = json.load(response)
-        except HTTPError as error:
+        started = time.monotonic()
+        read_timeout = params.get("timeout", 30) + 5 if method == "getUpdates" else 8
+        safe_to_retry = method in ("getMe", "getChat", "getChatMember", "getWebhookInfo", "getUpdates")
+        for attempt in range(2):
+            connection = getattr(self.local, "connection", None)
+            if connection and time.monotonic() - getattr(self.local, "last_used", 0) > 20:
+                self.close()
+                connection = None
+            if connection is None:
+                connection = HTTPSConnection("api.telegram.org", timeout=3)
+                if self.ipv4_only:
+                    connection._create_connection = connect_ipv4
+                self.local.connection = connection
             try:
-                result = json.load(error)
-            except (ValueError, OSError):
-                raise TelegramError(error.code) from None
-        except (URLError, TimeoutError, OSError):
-            # Ne jamais journaliser l'URL : elle contient le jeton.
-            raise TelegramError(0) from None
-        if not result.get("ok"):
-            raise TelegramError(result.get("error_code", 0),
-                                result.get("parameters", {}).get("retry_after", 5))
-        return result["result"]
+                if connection.sock is None:
+                    connection.connect()
+                connection.sock.settimeout(read_timeout)
+                connection.request("POST", self.path + method, json.dumps(params).encode(),
+                                   {"Content-Type": "application/json"})
+                response = connection.getresponse()
+                body = response.read()
+                self.local.last_used = time.monotonic()
+                status = response.status
+                if response.will_close:
+                    self.close()
+                result = json.loads(body)
+            except (OSError, HTTPException, ValueError):
+                self.close()
+                if safe_to_retry and attempt == 0:
+                    continue
+                LOG.warning("Appel %s en échec après %.2fs.", method, time.monotonic() - started)
+                raise TelegramError(0) from None
+            elapsed = time.monotonic() - started
+            if method != "getUpdates" and elapsed > 1:
+                LOG.warning("Appel %s lent : %.2fs.", method, elapsed)
+            if not isinstance(result, dict):
+                raise TelegramError(0)
+            if not result.get("ok"):
+                raise TelegramError(result.get("error_code", status),
+                                    result.get("parameters", {}).get("retry_after", 5))
+            if "result" not in result:
+                raise TelegramError(0)
+            return result["result"]
 
 
 class Bot:
@@ -68,6 +160,16 @@ class Bot:
         self.moderator_ids = frozenset(moderator_ids)
         self.notify_chat_id = notify_chat_id
         self.visitors = visitors
+        self.background = None
+
+    def later(self, function, user):
+        if self.background:
+            self.background.submit(function, user)
+        else:
+            try:
+                function(user)
+            except TelegramError as error:
+                LOG.warning("Tâche secondaire impossible (code %s).", error.code)
 
     def notify_new_visitor(self, user):
         user_id = user.get("id")
@@ -166,7 +268,12 @@ class Bot:
     def handle(self, update):
         callback = update.get("callback_query")
         if callback:
-            self.api.call("answerCallbackQuery", callback_query_id=callback["id"])
+            try:
+                self.api.call("answerCallbackQuery", callback_query_id=callback["id"])
+            except TelegramError as error:
+                if error.code != 400:
+                    raise
+                LOG.info("Bouton expiré : affichage des règles conservé.")
             chat = callback.get("message", {}).get("chat", {})
             if callback.get("data") == "rules" and chat.get("type") == "private":
                 self.show_rules(chat["id"])
@@ -174,33 +281,33 @@ class Bot:
         membership = update.get("chat_member")
         if membership:
             if str(membership.get("chat", {}).get("id")) == self.group_id:
-                self.promote_known(membership["new_chat_member"]["user"])
+                self.later(self.promote_known, membership["new_chat_member"]["user"])
             return
         message = update.get("message", {})
         chat = message.get("chat", {})
         if chat.get("type") == "private":
             user = message.get("from", {})
-            command = message.get("text", "").split(maxsplit=1)[0:1]
-            if command and command[0].lower() in ("/start", f"/start@{self.username.lower()}"):
-                self.notify_new_visitor(user)
+            parts = message.get("text", "").split(maxsplit=1)
+            command = parts[0].lower() if parts else ""
+            start = command in ("/start", f"/start@{self.username.lower()}")
             if "audio" in message or "document" in message:
                 self.publish_mp3(message)
                 return
-            if message.get("text", "").split(maxsplit=1)[0:1] == ["/id"]:
+            if command in ("/id", f"/id@{self.username.lower()}"):
                 self.api.call("sendMessage", chat_id=chat["id"],
                               text=f"Votre identifiant Telegram : {user['id']}")
                 return
-            self.promote_known(user)
-            if message.get("text", "").split() == ["/start", "rules"]:
+            if start and parts[1:] == ["rules"]:
                 self.show_rules(chat["id"])
-                return
-            self.private_welcome(chat["id"])
+            else:
+                self.private_welcome(chat["id"])
+            if start:
+                self.later(self.notify_new_visitor, user)
+                self.later(self.promote_known, user)
         elif str(chat.get("id")) == self.group_id:
-            if not message.get("sender_chat"):
-                self.promote_known(message.get("from", {}))
             members = [u for u in message.get("new_chat_members", []) if not u.get("is_bot")]
             for user in members:
-                self.promote_known(user)
+                self.later(self.promote_known, user)
                 try:
                     # Telegram autorise l'envoi seulement si le membre a déjà
                     # ouvert le bot en privé. Aucun message de repli dans le groupe.
@@ -224,7 +331,7 @@ def main():
     rules = rules_path.read_text(encoding="utf-8").strip()
     if not rules or len(rules) > 3500:
         raise SystemExit("Le règlement doit contenir entre 1 et 3500 caractères.")
-    api = Telegram(token)
+    api = Telegram(token, ipv4_only=os.environ.get("TELEGRAM_IPV4_ONLY", "1") == "1")
     try:
         username = api.call("getMe")["username"]
         webhook = api.call("getWebhookInfo")
@@ -247,6 +354,7 @@ def main():
         visitors = StartVisitors(os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"))
     bot = Bot(api, username, group_id, group_url, rules, admin_ids, moderator_ids,
               int(notify_chat_id) if notify_chat_id else None, visitors)
+    bot.background = BackgroundTasks()
     offset = 0
     LOG.info("Bot démarré : @%s", username)
     while True:
@@ -257,9 +365,12 @@ def main():
                 try:
                     bot.handle(update)
                 except TelegramError as error:
-                    if error.code not in (400, 403):
+                    if error.code in (401, 404, 409):
                         raise
-                    LOG.warning("Message non envoyé (code %s).", error.code)
+                    # Ne pas rejouer une mise à jour entière : l'envoi a pu
+                    # réussir avant une coupure de sa réponse HTTP.
+                    LOG.warning("Mise à jour %s interrompue (code %s), sans renvoi automatique.",
+                                update["update_id"], error.code)
                 offset = update["update_id"] + 1
         except TelegramError as error:
             if error.code in (401, 404, 409):
