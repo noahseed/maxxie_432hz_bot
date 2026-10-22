@@ -2,12 +2,27 @@
 import json
 import logging
 import os
+import sqlite3
 from pathlib import Path
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("maxxie")
+
+
+class StartVisitors:
+    def __init__(self, path):
+        self.db = sqlite3.connect(path)
+        self.db.execute("CREATE TABLE IF NOT EXISTS visitors (user_id INTEGER PRIMARY KEY)")
+        self.db.commit()
+
+    def contains(self, user_id):
+        return self.db.execute("SELECT 1 FROM visitors WHERE user_id = ?", (user_id,)).fetchone() is not None
+
+    def remember(self, user_id):
+        self.db.execute("INSERT OR IGNORE INTO visitors VALUES (?)", (user_id,))
+        self.db.commit()
 
 
 class TelegramError(Exception):
@@ -42,7 +57,8 @@ class Telegram:
 
 
 class Bot:
-    def __init__(self, api, username, group_id, group_url, rules, admin_ids=(), moderator_ids=()):
+    def __init__(self, api, username, group_id, group_url, rules, admin_ids=(), moderator_ids=(),
+                 notify_chat_id=None, visitors=None):
         self.api = api
         self.username = username
         self.group_id = group_id
@@ -50,6 +66,26 @@ class Bot:
         self.rules = rules
         self.admin_ids = frozenset(admin_ids)
         self.moderator_ids = frozenset(moderator_ids)
+        self.notify_chat_id = notify_chat_id
+        self.visitors = visitors
+
+    def notify_new_visitor(self, user):
+        user_id = user.get("id")
+        if not self.notify_chat_id or self.visitors is None or not user_id or user.get("is_bot"):
+            return
+        if self.visitors.contains(user_id):
+            return
+        name = " ".join(user.get(key, "") for key in ("first_name", "last_name")).strip() or "Sans nom"
+        username = f"@{user['username']}" if user.get("username") else "Aucun pseudonyme"
+        try:
+            self.api.call("sendMessage", chat_id=self.notify_chat_id,
+                          text=f"Nouveau visiteur du bot 👋\n\n{name}\n{username}\n"
+                               f"Identifiant Telegram : {user_id}\nA démarré le bot avec /start.")
+        except TelegramError as error:
+            # Un échec de notification ne bloque jamais l'accueil du visiteur.
+            LOG.warning("Notification de visiteur impossible (code %s).", error.code)
+            return
+        self.visitors.remember(user_id)
 
     def promote_known(self, user):
         user_id = user.get("id")
@@ -144,6 +180,9 @@ class Bot:
         chat = message.get("chat", {})
         if chat.get("type") == "private":
             user = message.get("from", {})
+            command = message.get("text", "").split(maxsplit=1)[0:1]
+            if command and command[0].lower() in ("/start", f"/start@{self.username.lower()}"):
+                self.notify_new_visitor(user)
             if "audio" in message or "document" in message:
                 self.publish_mp3(message)
                 return
@@ -200,7 +239,14 @@ def main():
             raise ValueError
     except ValueError:
         raise SystemExit("Les listes doivent contenir des IDs positifs ; MODERATOR_USER_IDS doit être inclus dans ADMIN_USER_IDS.") from None
-    bot = Bot(api, username, group_id, group_url, rules, admin_ids, moderator_ids)
+    notify_chat_id = os.environ.get("NOTIFY_CHAT_ID", "").strip()
+    visitors = None
+    if notify_chat_id:
+        if not notify_chat_id.isdigit() or int(notify_chat_id) <= 0:
+            raise SystemExit("NOTIFY_CHAT_ID doit être l'identifiant positif du destinataire privé.")
+        visitors = StartVisitors(os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"))
+    bot = Bot(api, username, group_id, group_url, rules, admin_ids, moderator_ids,
+              int(notify_chat_id) if notify_chat_id else None, visitors)
     offset = 0
     LOG.info("Bot démarré : @%s", username)
     while True:

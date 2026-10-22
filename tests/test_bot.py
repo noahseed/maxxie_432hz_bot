@@ -1,7 +1,67 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock
 
-from bot import Bot, TelegramError
+from bot import Bot, StartVisitors, TelegramError
+
+
+class VisitorNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "visitors.sqlite3"
+        self.visitors = StartVisitors(self.path)
+        self.addCleanup(self.visitors.db.close)
+        self.api = Mock()
+        self.bot = Bot(self.api, "MaxxieBot", "-10042", "https://t.me/test", "Règles",
+                       notify_chat_id=99, visitors=self.visitors)
+
+    def start(self, text="/start", user_id=7, chat_type="private"):
+        self.bot.handle({"message": {"chat": {"id": user_id, "type": chat_type},
+                                    "from": {"id": user_id, "first_name": "Camille", "username": "camille"},
+                                    "text": text}})
+
+    def test_first_start_notifies_owner_and_welcomes_visitor(self):
+        self.start()
+        calls = self.api.call.call_args_list
+        self.assertEqual(calls[0].kwargs["chat_id"], 99)
+        self.assertIn("@camille", calls[0].kwargs["text"])
+        self.assertIn("7", calls[0].kwargs["text"])
+        self.assertEqual(calls[1].kwargs["chat_id"], 7)
+        self.start()
+        self.assertEqual(sum(call.kwargs.get("chat_id") == 99 for call in self.api.call.call_args_list), 1)
+
+    def test_persistent_store_survives_reopen(self):
+        self.start()
+        reopened = StartVisitors(self.path)
+        self.addCleanup(reopened.db.close)
+        self.bot.visitors = reopened
+        self.api.reset_mock()
+        self.start()
+        self.assertEqual(self.api.call.call_count, 1)
+        self.assertEqual(self.api.call.call_args.kwargs["chat_id"], 7)
+
+    def test_regular_text_and_group_start_do_not_notify(self):
+        self.start("Bonjour")
+        self.start(chat_type="group")
+        self.assertFalse(self.visitors.contains(7))
+        self.assertFalse(any(call.kwargs.get("chat_id") == 99 for call in self.api.call.call_args_list))
+
+    def test_deep_link_and_addressed_command_notify(self):
+        self.start("/start rules")
+        self.start("/start@MaxxieBot", user_id=8)
+        self.assertTrue(self.visitors.contains(7))
+        self.assertTrue(self.visitors.contains(8))
+
+    def test_failed_notification_does_not_block_welcome_and_can_retry(self):
+        self.api.call.side_effect = [TelegramError(403), {}]
+        self.start()
+        self.assertEqual(self.api.call.call_args.kwargs["chat_id"], 7)
+        self.assertFalse(self.visitors.contains(7))
+        self.api.call.side_effect = None
+        self.start()
+        self.assertTrue(self.visitors.contains(7))
 
 
 class WelcomeTests(unittest.TestCase):

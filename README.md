@@ -97,7 +97,13 @@ Un administrateur (ou le propriétaire) du groupe peut envoyer un MP3 en privé 
 
 Les MP3 sont acceptés comme audio ou document, selon leur extension `.mp3` (ou leur type `audio/mpeg` si aucun nom n'est fourni). Le fichier n'est ni téléchargé sur le VPS ni converti. Un MP3 envoyé comme document reste un document. Les autres fichiers audio sont refusés. Le bot doit pouvoir publier dans le groupe.
 
-## Vérification locale
+## Notifications de nouveaux visiteurs
+
+Configurer `NOTIFY_CHAT_ID` avec l'identifiant numérique du destinataire privé, puis redémarrer le service. Le destinataire doit avoir démarré le bot et ne pas l'avoir bloqué. À son premier `/start` privé (y compris un lien `/start rules`), chaque utilisateur déclenche une notification contenant son nom affiché, son @pseudo éventuel et son identifiant Telegram. Les messages ordinaires et les commandes du groupe ne déclenchent aucune notification.
+
+Les identifiants signalés sont conservés dans `VISITORS_DB` (par défaut `/var/lib/maxxie-bot/visitors.sqlite3`). Le service systemd crée ce dossier privé avec `StateDirectory=maxxie-bot`. Seuls les identifiants sont stockés, pas les messages ni les noms. Le suivi commence à l'activation : un ancien utilisateur qui refait `/start` sera donc signalé une fois. Une notification échouée n'empêche pas l'accueil et pourra être retentée à son prochain `/start`. Une interruption entre l'envoi et l'enregistrement peut exceptionnellement entraîner un doublon.
+
+## Tests
 
 ```bash
 python3 -m unittest discover -s tests -v

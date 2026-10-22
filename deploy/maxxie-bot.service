@@ -19,6 +19,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 UMask=0077
+StateDirectory=maxxie-bot
+StateDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target
