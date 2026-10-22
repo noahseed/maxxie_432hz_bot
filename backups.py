@@ -1,6 +1,7 @@
 """Sauvegardes SQLite cohérentes par base, vérifiées et restaurables sans écrasement."""
 import argparse
-from contextlib import closing
+from contextlib import closing, contextmanager
+import fcntl
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -73,7 +74,21 @@ def encrypt_snapshot(snapshot, certificate, output):
         os.replace(encrypted, output)
 
 
+@contextmanager
+def backup_lock(root):
+    root = Path(root)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (root / ".backup.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def create_backup(tasks, visitors, root, keep=14):
+    with backup_lock(root):
+        return _create_backup(tasks, visitors, root, keep)
+
+
+def _create_backup(tasks, visitors, root, keep=14):
     if keep < 1:
         raise ValueError("La rétention doit être positive")
     root = Path(root)
@@ -117,14 +132,15 @@ def main():
         result = restore(args.restore, args.restore_to)
         print(f"Restauration vérifiée dans {result}. Bases actives inchangées ; anciennes tâches en attente neutralisées.")
     else:
-        result = create_backup(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"),
-                               os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"),
-                               os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"),
-                               int(os.environ.get("BACKUP_KEEP", "14")))
-        certificate = os.environ.get("BACKUP_CERT", "").strip()
-        if certificate:
-            encrypt_snapshot(result, Path(certificate), result.parent / "offsite-latest.enc")
-        print(f"Sauvegarde et test de restauration réussis : {result.name}")
+        with backup_lock(os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups")):
+            result = _create_backup(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"),
+                                   os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"),
+                                   os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"),
+                                   int(os.environ.get("BACKUP_KEEP", "14")))
+            certificate = os.environ.get("BACKUP_CERT", "").strip()
+            if certificate:
+                encrypt_snapshot(result, Path(certificate), result.parent / "offsite-latest.enc")
+            print(f"Sauvegarde et test de restauration réussis : {result.name}")
 
 
 if __name__ == "__main__":

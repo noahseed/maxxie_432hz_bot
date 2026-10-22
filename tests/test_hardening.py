@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from backups import create_backup, encrypt_snapshot
 from bot import Bot
 from offsite_pull import verify_encrypted
+from concurrent.futures import ThreadPoolExecutor
 from reliability import JournalAPI, TaskStore, TelegramError, Worker
 
 
@@ -40,6 +41,25 @@ class HardeningTests(unittest.TestCase):
         self.assertTrue(rights[0]["can_restrict_members"])
         self.assertFalse(rights[1]["can_restrict_members"])
         self.assertFalse(rights[1]["can_delete_messages"])
+
+    def test_completed_mp3_is_confirmed_after_rights_revoked(self):
+        raw = Mock()
+        raw.call.side_effect = [{"status": "administrator"}, {"message_id": 90},
+                                TelegramError(429, 1), {}]
+        journal = JournalAPI(raw, self.store)
+        bot = Bot(journal, "TestBot", "-42", "url", "Règles")
+        message = {"chat": {"id": 7, "type": "private"}, "from": {"id": 7},
+                   "message_id": 12, "audio": {"file_name": "music.mp3"}}
+        self.store.ingest([{"update_id": 1, "message": message}])
+        worker = Worker(self.store, journal, lambda _, u: bot.handle(u), 0, threading.Event())
+        worker.process_one()
+        with self.store.db:
+            self.store.db.execute("UPDATE tasks SET ready=0")
+        worker.process_one()
+        methods = [call.args[0] for call in raw.call.call_args_list]
+        self.assertEqual(methods, ["getChatMember", "copyMessage", "sendMessage", "sendMessage"])
+        self.assertEqual(raw.call.call_args.kwargs["text"], "MP3 publié dans le groupe ✅")
+        self.assertEqual(self.store.pending_count(), 0)
 
     def test_changed_destination_is_rejected_on_retry(self):
         task_id = 1
@@ -93,6 +113,31 @@ class EncryptionAndRotationTests(unittest.TestCase):
                 db.execute("CREATE TABLE example(value INTEGER)")
                 db.execute("INSERT INTO example VALUES (42)")
 
+    def test_concurrent_backups_are_serialized(self):
+        from backups import _create_backup
+        active = 0
+        maximum = 0
+        guard = threading.Lock()
+        def tracked(*args, **kwargs):
+            nonlocal active, maximum
+            with guard:
+                active += 1
+                maximum = max(maximum, active)
+            try:
+                return _create_backup(*args, **kwargs)
+            finally:
+                with guard:
+                    active -= 1
+        def backup(_):
+            return create_backup(self.root / "tasks.sqlite3", self.root / "visitors.sqlite3",
+                                 self.root / "backups", keep=1)
+        with patch("backups._create_backup", side_effect=tracked), ThreadPoolExecutor(4) as pool:
+            list(pool.map(backup, range(12)))
+        self.assertEqual(maximum, 1)
+        marker = json.loads((self.root / "backups/latest.json").read_text())
+        self.assertTrue((self.root / "backups" / marker["snapshot"]).is_dir())
+        self.assertEqual(len(list((self.root / "backups").glob("backup-*"))), 1)
+
     def test_same_second_rotation_keeps_latest(self):
         original = tempfile.mkdtemp
         suffixes = iter(("zzzzzzzz", "aaaaaaaa"))
@@ -124,6 +169,18 @@ class EncryptionAndRotationTests(unittest.TestCase):
         verify_encrypted(encrypted, key, staging)
         with closing(sqlite3.connect(staging / "restore-check/tasks.sqlite3")) as db:
             self.assertEqual(db.execute("SELECT value FROM example").fetchone()[0], 42)
+        for label, timestamp in (("stale", datetime.now(timezone.utc) - timedelta(hours=40)),
+                                 ("future", datetime.now(timezone.utc) + timedelta(hours=2))):
+            manifest_path = snapshot / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["created_at"] = timestamp.isoformat()
+            manifest_path.write_text(json.dumps(manifest))
+            old_archive = self.root / (label + ".enc")
+            encrypt_snapshot(snapshot, certificate, old_archive)
+            check = self.root / label
+            check.mkdir()
+            with self.assertRaisesRegex(ValueError, "périmée"):
+                verify_encrypted(old_archive, key, check)
         damaged = bytearray(encrypted.read_bytes())
         damaged[-1] ^= 1
         encrypted.write_bytes(damaged)

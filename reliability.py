@@ -231,6 +231,16 @@ class JournalAPI:
         fingerprint, method, params = self.store.prepare_request(task_id, step, method, params)
         return self._execute(task_id, fingerprint, method, params)
 
+    def completed(self, step, method, **params):
+        task_id = getattr(self.local, "task_id", None)
+        if task_id is None:
+            raise RuntimeError("Action hors d'une tâche persistante")
+        fingerprint, _, _ = self.store.prepare_request(task_id, step, method, params)
+        with self.store.lock:
+            row = self.store.db.execute("SELECT status FROM actions WHERE task_id=? AND fingerprint=?",
+                                        (task_id, fingerprint)).fetchone()
+        return row is not None and row[0] == "done"
+
     def acknowledge_callback(self, callback_id):
         # Acquittement éphémère, sans effet sur l'envoi substantiel des règles.
         return self.api.call("answerCallbackQuery", callback_query_id=callback_id)

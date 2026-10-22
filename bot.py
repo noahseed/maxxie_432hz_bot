@@ -236,6 +236,12 @@ class Bot:
         user = message.get("from", {})
         if not user.get("id") or user.get("is_bot"):
             return
+        # Une copie confirmée reste publiée même si les droits changent ensuite.
+        if isinstance(self.api, JournalAPI) and self.api.completed(
+                "mp3-copy", "copyMessage", chat_id=self.group_id,
+                from_chat_id=chat_id, message_id=message["message_id"]):
+            self.confirm_mp3(chat_id)
+            return
         # Vérifier le statut réel, sans promouvoir un compte pour cet envoi.
         member = self.api.call("getChatMember", chat_id=self.group_id, user_id=user["id"])
         if member["status"] not in ("creator", "administrator"):
@@ -259,6 +265,9 @@ class Bot:
             self.action("mp3-error", "sendMessage", chat_id=chat_id,
                           text="Le MP3 n'a pas pu être publié. Vérifiez que le bot peut publier dans le groupe.")
             return
+        self.confirm_mp3(chat_id)
+
+    def confirm_mp3(self, chat_id):
         try:
             self.action("mp3-confirmation", "sendMessage", chat_id=chat_id, text="MP3 publié dans le groupe ✅")
         except TelegramError as error:

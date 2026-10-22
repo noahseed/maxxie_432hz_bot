@@ -1,5 +1,7 @@
 """Copie SSH chiffrée vers l'ordinateur, avec test local de déchiffrement/restauration."""
 import argparse
+from datetime import datetime, timezone
+import json
 import hashlib
 import os
 from pathlib import Path
@@ -30,6 +32,14 @@ def verify_encrypted(archive, key, staging):
                 while chunk := source.read(1024 * 1024):
                     target.write(chunk)
     restore(unpacked, staging / "restore-check")
+    metadata = json.loads((unpacked / "manifest.json").read_text(encoding="utf-8"))
+    created = datetime.fromisoformat(metadata["created_at"])
+    if created.tzinfo is None:
+        raise ValueError("Date de sauvegarde sans fuseau horaire")
+    age = (datetime.now(timezone.utc) - created).total_seconds()
+    if age < -300 or age > 36 * 3600:
+        raise ValueError("Sauvegarde hors VPS périmée (plus de 36 heures) ou datée dans le futur")
+    return metadata
 
 
 def pull(host, key, destination):

@@ -200,3 +200,5 @@ python3 -m unittest discover -s tests -v
 GitHub Actions exécute automatiquement ces tests sur Python 3.11 et 3.13 à chaque push et pull request. Les tests simulent les erreurs 429, coupures réseau, interruptions pendant les envois, redémarrages et une file de plus de 128 tâches, sans contacter Telegram.
 
 Après installation : contacter le bot en privé, vérifier les deux boutons ; faire rejoindre ce compte au groupe et vérifier la réception de l'accueil en privé, sans publication du bot dans le groupe. Un membre n'ayant jamais ouvert le bot ou l'ayant bloqué ne doit pas recevoir d'accueil. Vérifier aussi que le bot reste silencieux pendant une conversation ordinaire.
+
+Les sauvegardes du VPS sont verrouillées pendant la création, la rotation et le chiffrement pour éviter les exécutions simultanées. La copie sur l’ordinateur refuse une archive de plus de 36 heures (ou datée de plus de cinq minutes dans le futur) ; le service signale alors un échec sans remplacer les copies locales existantes.
