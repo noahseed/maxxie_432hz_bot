@@ -48,8 +48,8 @@ Les commandes `sudo` suivantes sont à exécuter sur le VPS. Copier d'abord le p
 
 ```bash
 ssh UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr 'mkdir -p ~/maxxie-bot'
-scp bot.py rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
-scp deploy/maxxie-bot.service deploy/configure.py UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
+scp bot.py assistant_ai.py rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
+scp deploy/maxxie-bot.service deploy/configure.py deploy/configure_openai.py UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 ```
 
 Puis sur le VPS :
@@ -59,8 +59,8 @@ sudo apt-get update
 sudo apt-get install -y python3 ca-certificates
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin maxxie-bot
 sudo install -d -m 755 /opt/maxxie-bot
-sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/rules.txt /opt/maxxie-bot/
-sudo install -m 644 ~/maxxie-bot/configure.py /opt/maxxie-bot/
+sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/assistant_ai.py ~/maxxie-bot/rules.txt /opt/maxxie-bot/
+sudo install -m 644 ~/maxxie-bot/configure.py ~/maxxie-bot/configure_openai.py /opt/maxxie-bot/
 sudo install -m 600 ~/maxxie-bot/.env.example /etc/maxxie-bot.env
 sudo nano /etc/maxxie-bot.env
 ```
@@ -96,6 +96,24 @@ Après modification de la liste, redémarrer le service. La promotion se déclen
 Un administrateur (ou le propriétaire) du groupe peut envoyer un MP3 en privé au bot : celui-ci copie le message dans le groupe, avec sa légende, puis confirme la publication en privé. Le statut d'administrateur est vérifié auprès de Telegram à chaque envoi ; la liste de promotion automatique ne suffit pas à autoriser une publication.
 
 Les MP3 sont acceptés comme audio ou document, selon leur extension `.mp3` (ou leur type `audio/mpeg` si aucun nom n'est fourni). Le fichier n'est ni téléchargé sur le VPS ni converti. Un MP3 envoyé comme document reste un document. Les autres fichiers audio sont refusés. Le bot doit pouvoir publier dans le groupe.
+
+## Assistant IA en privé
+
+L'intégration utilise l'[API Responses OpenAI](https://developers.openai.com/api/docs/guides/text) et le modèle configurable `gpt-5.6-terra`. Elle est désactivée sans `OPENAI_API_KEY`. Pour l'activer sur une installation existante :
+
+```bash
+ssh debian@maxxie432.rondeau-cameira.fr
+sudo python3 /opt/maxxie-bot/configure_openai.py
+sudo systemctl restart maxxie-bot
+```
+
+L'assistant de configuration demande la clé en saisie masquée, fait une courte requête API facturée pour vérifier l'accès au modèle, puis l'enregistre dans `/etc/maxxie-bot.env` (root uniquement). En cas d'échec, la configuration reste inchangée. Ne jamais ajouter la clé dans le dépôt, le chat ou une commande conservée dans l'historique. Pour une installation neuve, transférer aussi `deploy/configure_openai.py` et l'installer dans `/opt/maxxie-bot/`.
+
+Quand l'IA est active, les textes privés hors commandes reçoivent une réponse sur le groupe et ses règles. `/start`, `/id`, les boutons, les promotions et les MP3 gardent leur fonctionnement habituel. Aucun message du groupe, fichier ou identifiant Telegram n'est envoyé à OpenAI : seules la question privée, les règles et les informations publiques du groupe sont transmises. Le menu d'accueil signale l'usage de l'IA. Aucune action Telegram n'est confiée au modèle. Les instructions lui demandent de rester sur le sujet et de ne pas inventer de catalogue ; les réponses restent générées et peuvent être inexactes.
+
+Chaque question est indépendante, sans historique partagé ou enregistré. `store=false` désactive la conservation de la réponse pour sa récupération par l'API ; cela ne constitue pas une garantie d'absence de toute rétention chez OpenAI. Consulter les [contrôles de données OpenAI](https://developers.openai.com/api/docs/guides/your-data).
+
+Limites : 2000 caractères en entrée, 600 jetons de sortie maximum, une requête par utilisateur toutes les 10 secondes et `OPENAI_HOURLY_LIMIT=60` requêtes par heure au total (échecs inclus). Ces compteurs en mémoire repartent à zéro au redémarrage ; ce n'est pas un plafond de dépense en euros. Une requête attend au maximum 25 secondes et peut retarder temporairement les autres événements du bot. En cas de panne API, les règles et le lien restent accessibles.
 
 ## Vérification locale
 

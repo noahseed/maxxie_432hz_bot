@@ -7,6 +7,8 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from assistant_ai import AIError, AssistantAI, DEFAULT_MODEL
+
 LOG = logging.getLogger("maxxie")
 
 
@@ -42,7 +44,7 @@ class Telegram:
 
 
 class Bot:
-    def __init__(self, api, username, group_id, group_url, rules, admin_ids=(), moderator_ids=()):
+    def __init__(self, api, username, group_id, group_url, rules, admin_ids=(), moderator_ids=(), assistant=None):
         self.api = api
         self.username = username
         self.group_id = group_id
@@ -50,6 +52,7 @@ class Bot:
         self.rules = rules
         self.admin_ids = frozenset(admin_ids)
         self.moderator_ids = frozenset(moderator_ids)
+        self.assistant = assistant
 
     def promote_known(self, user):
         user_id = user.get("id")
@@ -84,7 +87,10 @@ class Bot:
                            'Ce Bot gère le groupe "Maxxie 432Hz".\n'
                            "Il s'agit d'un groupe de partage de musiques converties en 432Hz "
                            "(Variétés Françaises et Internationales)\n\n"
-                           "Choisissez une option :",
+                           "Choisissez une option :" + (
+                               "\n\nVous pouvez aussi poser une question sur le groupe. "
+                               "Les questions sont transmises à OpenAI pour une réponse par IA."
+                               if self.assistant else ""),
                       reply_markup={"inline_keyboard": [
                           [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}], [
                           {"text": "Rejoindre le groupe 🎵", "url": self.group_url}
@@ -155,6 +161,15 @@ class Bot:
             if message.get("text", "").split() == ["/start", "rules"]:
                 self.show_rules(chat["id"])
                 return
+            text = message.get("text", "").strip()
+            if self.assistant and text and not text.startswith("/"):
+                try:
+                    answer = self.assistant.answer(chat["id"], text, self.rules, self.group_url)
+                except AIError as error:
+                    LOG.warning("Assistant OpenAI indisponible (code %s).", error.code)
+                    answer = "L'assistant IA est momentanément indisponible. Les règles et le lien du groupe restent accessibles avec /start."
+                self.api.call("sendMessage", chat_id=chat["id"], text=answer)
+                return
             self.private_welcome(chat["id"])
         elif str(chat.get("id")) == self.group_id:
             if not message.get("sender_chat"):
@@ -200,7 +215,17 @@ def main():
             raise ValueError
     except ValueError:
         raise SystemExit("Les listes doivent contenir des IDs positifs ; MODERATOR_USER_IDS doit être inclus dans ADMIN_USER_IDS.") from None
-    bot = Bot(api, username, group_id, group_url, rules, admin_ids, moderator_ids)
+    assistant = None
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if key:
+        try:
+            hourly_limit = int(os.environ.get("OPENAI_HOURLY_LIMIT", "60"))
+            if hourly_limit <= 0:
+                raise ValueError
+        except ValueError:
+            raise SystemExit("OPENAI_HOURLY_LIMIT doit être un entier positif.") from None
+        assistant = AssistantAI(key, os.environ.get("OPENAI_MODEL", DEFAULT_MODEL), hourly_limit)
+    bot = Bot(api, username, group_id, group_url, rules, admin_ids, moderator_ids, assistant)
     offset = 0
     LOG.info("Bot démarré : @%s", username)
     while True:
