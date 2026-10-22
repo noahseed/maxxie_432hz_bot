@@ -1,0 +1,11 @@
+[Unit]
+Description=Sauvegarde quotidienne Maxxie
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Europe/Paris
+RandomizedDelaySec=600
+Persistent=true
+Unit=maxxie-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -48,8 +48,8 @@ Les commandes `sudo` suivantes sont à exécuter sur le VPS. Copier d'abord le p
 
 ```bash
 ssh UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr 'mkdir -p ~/maxxie-bot'
-scp bot.py reliability.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
-scp deploy/maxxie-bot.service deploy/configure.py UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
+scp bot.py reliability.py backups.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
+scp deploy/maxxie-bot.service deploy/maxxie-backup.service deploy/maxxie-backup.timer deploy/configure.py UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 ```
 
 Puis sur le VPS :
@@ -59,7 +59,7 @@ sudo apt-get update
 sudo apt-get install -y python3 ca-certificates
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin maxxie-bot
 sudo install -d -m 755 /opt/maxxie-bot
-sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
+sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/backups.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
 sudo install -m 644 ~/maxxie-bot/configure.py /opt/maxxie-bot/
 sudo install -m 600 ~/maxxie-bot/.env.example /etc/maxxie-bot.env
 sudo nano /etc/maxxie-bot.env
@@ -113,9 +113,9 @@ Les événements et actions en attente sont enregistrés dans `STATE_DB` (par d�
 
 Une erreur 429 reprogramme la tâche après le délai `retry_after`. Les étapes déjà confirmées ne sont pas rejouées : si la copie du MP3 a réussi mais sa confirmation privée est refusée temporairement, seule cette dernière sera renvoyée. Les erreurs temporaires de lecture sont également retentées, jusqu'à 8 tentatives par tâche. Les refus permanents sont journalisés sans boucle infinie.
 
-Le journal enregistre l'intention d'envoi avant la requête, puis son résultat confirmé. Si le service s'arrête pendant un envoi ou si la connexion coupe sans confirmation, l'état devient **incertain** : aucun renvoi automatique de cette action, car Telegram a peut-être accepté le fichier. Cette précaution réduit les doublons mais ne garantit pas une livraison exactement une fois. Vérifier le groupe avant de renvoyer un MP3 signalé comme incertain. Les appels de lecture restent retentables.
+Chaque action possède un identifiant d'étape stable. Sa requête est enregistrée avant son envoi, puis son résultat confirmé : une reprise conserve le contenu prévu initialement, même si welcome.txt ou les règles ont été modifiés entre-temps. Les requêtes enregistrées sont effacées à la fin de la tâche. Si le service s'arrête pendant un envoi ou si la connexion coupe sans confirmation, l'état devient **incertain** : aucun renvoi automatique de cette action, car Telegram a peut-être accepté le fichier. Cette précaution réduit les doublons mais ne garantit pas une livraison exactement une fois. Vérifier le groupe avant de renvoyer un MP3 signalé comme incertain. Les appels de lecture restent retentables.
 
-Les connexions HTTPS sont réutilisées. Les appels d'action dépassant une seconde sont journalisés avec leur méthode et leur durée, sans jeton ni contenu des messages. Un bouton expiré ne bloque plus l'affichage des règles. Le long polling renvoie immédiatement les nouveaux événements : ses 30 secondes d'attente ne sont pas un délai imposé aux réponses.
+Les connexions HTTPS sont réutilisées. Les appels d'action dépassant une seconde sont journalisés avec leur méthode et leur durée, sans jeton ni contenu des messages. L'acquittement d'un bouton est facultatif : son échec réseau ou son expiration n'empêche pas l'affichage des règles. Le long polling renvoie immédiatement les nouveaux événements : ses 30 secondes d'attente ne sont pas un délai imposé aux réponses.
 
 Au démarrage, une panne réseau ou Telegram entraîne une nouvelle tentative avec attente progressive (jusqu'à 60 secondes), au lieu de faire quitter le service. Un jeton refusé ou un webhook existant restent des erreurs explicites. SIGTERM/SIGINT arrêtent la réception et laissent terminer les tâches en cours ; les tâches restantes reprennent au prochain démarrage.
 
@@ -131,7 +131,38 @@ Pour surveiller les erreurs et les envois incertains :
 sudo journalctl -u maxxie-bot -n 100 --no-pager
 ```
 
-Une seule instance du bot doit utiliser les bases et le jeton. Une fois cette version déployée, conserver les bases lors des mises à jour pour préserver le suivi et la prévention des doublons.
+Un verrou de fichier exclusif refuse une seconde instance avant toute récupération des tâches. Une seule instance du bot doit utiliser les bases et le jeton. Une fois cette version déployée, conserver les bases lors des mises à jour pour préserver le suivi et la prévention des doublons.
+
+## Commande privée /statut
+
+`OWNER_USER_ID` désigne le seul compte autorisé à consulter `/statut` (à défaut, l'identifiant privé `NOTIFY_CHAT_ID` est utilisé). Les administrateurs du groupe n'obtiennent pas ce droit automatiquement. La commande fonctionne uniquement en privé et indique le nombre de tâches en attente, en cours, terminées, échouées ou incertaines, les identifiants des cinq dernières tâches à vérifier et la date de la dernière sauvegarde contrôlée. Aucun contenu des messages, jeton ou chemin privé n'est transmis.
+
+## Sauvegardes quotidiennes et restauration
+
+Le timer `maxxie-backup.timer` lance une sauvegarde quotidienne vers **03 h 30, heure de Paris**, avec un décalage aléatoire de dix minutes au maximum. `Persistent=true` rattrape un déclenchement manqué après un arrêt du VPS. Les deux bases sont copiées avec l'API SQLite, y compris leurs données WAL, puis contrôlées avec `quick_check` et SHA-256. Chaque sauvegarde est réellement restaurée dans un dossier temporaire avant validation.
+
+Les sauvegardes restent **sur le VPS**, dans `BACKUP_DIR` (par défaut `/var/lib/maxxie-bot/backups`), accessible uniquement au compte du service. `BACKUP_KEEP=14` conserve les quatorze dernières sauvegardes réussies. Ces copies locales ne couvrent pas la perte totale du VPS. Les deux bases sont sauvegardées successivement, pas dans une transaction commune.
+
+Installation du timer après installation des scripts :
+
+```bash
+sudo install -m 644 ~/maxxie-bot/maxxie-backup.service ~/maxxie-bot/maxxie-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now maxxie-backup.timer
+sudo systemctl start maxxie-backup.service
+sudo systemctl list-timers maxxie-backup.timer
+sudo journalctl -u maxxie-backup.service -n 20 --no-pager
+```
+
+Pour tester manuellement une restauration, choisir un dossier de sauvegarde `backup-…` et une **destination nouvelle** :
+
+```bash
+sudo -u maxxie-bot python3 /opt/maxxie-bot/backups.py --restore /var/lib/maxxie-bot/backups/backup-CHOISIE --restore-to /var/lib/maxxie-bot/restauration-test
+```
+
+La commande vérifie les empreintes, refuse tout écrasement et ne touche pas aux bases actives. Les tâches en attente d'une ancienne sauvegarde sont neutralisées en état `uncertain` : elles ont peut-être été exécutées depuis la sauvegarde. Les réactiver aveuglément pourrait republier des MP3.
+
+Pour rétablir réellement ces bases : arrêter le timer, le service de sauvegarde et le bot ; conserver à part les bases actuelles et leurs éventuels fichiers `-wal`/`-shm` ; installer les deux fichiers restaurés à leurs chemins configurés, avec propriétaire `maxxie-bot` et permissions `600` ; redémarrer le bot et le timer. Ne jamais mélanger une base restaurée avec un ancien WAL. Vérifier `/statut`, les journaux et le groupe avant de traiter manuellement les tâches incertaines. La restauration revient à la date de la sauvegarde et peut aussi faire oublier des visiteurs signalés depuis.
 
 ## Tests
 

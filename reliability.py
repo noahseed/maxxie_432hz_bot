@@ -5,6 +5,7 @@ import logging
 import sqlite3
 import threading
 import time
+import fcntl
 
 LOG = logging.getLogger("maxxie")
 READ_METHODS = {"getMe", "getChat", "getChatMember", "getWebhookInfo", "getUpdates"}
@@ -24,6 +25,14 @@ class UncertainAction(Exception):
 class TaskStore:
     def __init__(self, path):
         self.lock = threading.RLock()
+        self.instance_lock = None
+        if str(path) != ":memory:":
+            self.instance_lock = open(str(path) + ".lock", "a", encoding="utf-8")
+            try:
+                fcntl.flock(self.instance_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.instance_lock.close()
+                raise RuntimeError("Une autre instance utilise déjà cette base de tâches.") from None
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
@@ -41,6 +50,8 @@ class TaskStore:
                 task_id INTEGER NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL,
                 result TEXT, code INTEGER, PRIMARY KEY(task_id, fingerprint));
         """)
+        if "request" not in {row[1] for row in self.db.execute("PRAGMA table_info(actions)")}:
+            self.db.execute("ALTER TABLE actions ADD COLUMN request TEXT")
         # Une interruption entre l'envoi et son enregistrement laisse un résultat
         # incertain. Les étapes précédentes confirmées restent dédoublonnées.
         with self.db:
@@ -50,6 +61,37 @@ class TaskStore:
     def close(self):
         with self.lock:
             self.db.close()
+            if self.instance_lock:
+                self.instance_lock.close()
+                self.instance_lock = None
+
+    def summary(self):
+        with self.lock:
+            counts = dict(self.db.execute("SELECT status,count(*) FROM tasks GROUP BY status"))
+            recent = self.db.execute("SELECT id,kind,status FROM tasks WHERE status IN ('failed','uncertain') "
+                                     "ORDER BY updated DESC LIMIT 5").fetchall()
+            return counts, recent
+
+    def prepare_request(self, task_id, step, method, params):
+        fingerprint = hashlib.sha256(("step:" + step).encode()).hexdigest()
+        legacy = hashlib.sha256(json.dumps([method, params], sort_keys=True).encode()).hexdigest()
+        with self.lock, self.db:
+            row = self.db.execute("SELECT request FROM actions WHERE task_id=? AND fingerprint=?",
+                                  (task_id, fingerprint)).fetchone()
+            if row is None:
+                # Compatibilité avec le journal de la version précédente.
+                self.db.execute("UPDATE actions SET fingerprint=? WHERE task_id=? AND fingerprint=?",
+                                (fingerprint, task_id, legacy))
+                row = self.db.execute("SELECT request FROM actions WHERE task_id=? AND fingerprint=?",
+                                      (task_id, fingerprint)).fetchone()
+            if row and row[0]:
+                saved = json.loads(row[0])
+                return fingerprint, saved[0], saved[1]
+            request = json.dumps([method, params])
+            self.db.execute("INSERT INTO actions(task_id,fingerprint,status,request) VALUES (?,?,'pending',?) "
+                            "ON CONFLICT(task_id,fingerprint) DO UPDATE SET request=excluded.request",
+                            (task_id, fingerprint, request))
+            return fingerprint, method, params
 
     def offset(self):
         with self.lock:
@@ -91,6 +133,7 @@ class TaskStore:
             # Effacer les données du visiteur dès que la tâche est terminée.
             self.db.execute("UPDATE tasks SET status=?,payload='{}',updated=? WHERE id=?",
                             (status, time.time(), task_id))
+            self.db.execute("UPDATE actions SET request=NULL WHERE task_id=?", (task_id,))
 
     def retry(self, task, delay):
         if task["attempts"] >= 8:
@@ -124,7 +167,9 @@ class TaskStore:
                 raise UncertainAction
             if row and row[0] == "failed":
                 raise TelegramError(row[2])
-            self.db.execute("INSERT OR REPLACE INTO actions VALUES (?,?,'sending',NULL,NULL)", (task_id, fingerprint))
+            self.db.execute("INSERT INTO actions(task_id,fingerprint,status) VALUES (?,?,'sending') "
+                            "ON CONFLICT(task_id,fingerprint) DO UPDATE SET status='sending',result=NULL,code=NULL",
+                            (task_id, fingerprint))
             return False, None
 
     def action_result(self, task_id, fingerprint, status, result=None, code=None):
@@ -146,6 +191,20 @@ class JournalAPI:
         if task_id is None:
             raise RuntimeError("Action hors d'une tâche persistante")
         fingerprint = hashlib.sha256(json.dumps([method, params], sort_keys=True).encode()).hexdigest()
+        return self._execute(task_id, fingerprint, method, params)
+
+    def action(self, step, method, **params):
+        task_id = getattr(self.local, "task_id", None)
+        if task_id is None:
+            raise RuntimeError("Action hors d'une tâche persistante")
+        fingerprint, method, params = self.store.prepare_request(task_id, step, method, params)
+        return self._execute(task_id, fingerprint, method, params)
+
+    def acknowledge_callback(self, callback_id):
+        # Acquittement éphémère, sans effet sur l'envoi substantiel des règles.
+        return self.api.call("answerCallbackQuery", callback_query_id=callback_id)
+
+    def _execute(self, task_id, fingerprint, method, params):
         done, result = self.store.begin_action(task_id, fingerprint)
         if done:
             return result

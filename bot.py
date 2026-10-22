@@ -110,7 +110,7 @@ class Telegram:
 
 class Bot:
     def __init__(self, api, username, group_id, group_url, rules, admin_ids=(), moderator_ids=(),
-                 notify_chat_id=None, visitors=None, welcome=None):
+                 notify_chat_id=None, visitors=None, welcome=None, owner_user_id=None, backup_dir=None):
         self.api = api
         self.username = username
         self.group_id = group_id
@@ -122,6 +122,38 @@ class Bot:
         self.visitors = visitors
         self.welcome = welcome if welcome is not None else Path(__file__).with_name("welcome.txt").read_text(encoding="utf-8").strip()
         self.background = None
+        self.owner_user_id = owner_user_id
+        self.backup_dir = Path(backup_dir) if backup_dir else None
+
+    def action(self, step, method, **params):
+        if isinstance(self.api, JournalAPI):
+            return self.api.action(step, method, **params)
+        return self.api.call(method, **params)
+
+    def show_status(self, chat_id, user_id):
+        if not self.owner_user_id or user_id != self.owner_user_id:
+            self.action("status-denied", "sendMessage", chat_id=chat_id,
+                        text="Cette commande est réservée au propriétaire du bot.")
+            return
+        if not isinstance(self.background, TaskStore):
+            return
+        counts, recent = self.background.summary()
+        lines = ["État du bot", f"En attente : {counts.get('pending', 0)}",
+                 f"En cours : {counts.get('running', 0)}", f"Terminées : {counts.get('done', 0)}",
+                 f"Échouées : {counts.get('failed', 0)}", f"Incertaines : {counts.get('uncertain', 0)}"]
+        if recent:
+            lines.append("Dernières tâches à vérifier :")
+            lines.extend(f"#{task_id} — {kind} : {status}" for task_id, kind, status in recent)
+        marker = self.backup_dir / "latest.json" if self.backup_dir else None
+        if marker and marker.exists():
+            try:
+                metadata = json.loads(marker.read_text(encoding="utf-8"))
+                lines.append(f"Dernière sauvegarde vérifiée : {metadata['created_at']}")
+            except (OSError, ValueError, KeyError):
+                lines.append("État de sauvegarde illisible.")
+        else:
+            lines.append("Aucune sauvegarde vérifiée disponible.")
+        self.action("status", "sendMessage", chat_id=chat_id, text="\n".join(lines))
 
     def later(self, function, user):
         if self.background:
@@ -141,7 +173,7 @@ class Bot:
         name = " ".join(user.get(key, "") for key in ("first_name", "last_name")).strip() or "Sans nom"
         username = f"@{user['username']}" if user.get("username") else "Aucun pseudonyme"
         try:
-            self.api.call("sendMessage", chat_id=self.notify_chat_id,
+            self.action("visitor-notification", "sendMessage", chat_id=self.notify_chat_id,
                           text=f"Nouveau visiteur du bot 👋\n\n{name}\n{username}\n"
                                f"Identifiant Telegram : {user_id}\nA démarré le bot avec /start.")
         except TelegramError as error:
@@ -167,11 +199,11 @@ class Bot:
             rights = {key: value for key, value in member.items()
                       if (key.startswith("can_") and key != "can_be_edited") or key == "is_anonymous"}
             rights.update(can_delete_messages=True, can_restrict_members=True)
-            self.api.call("promoteChatMember", chat_id=self.group_id, user_id=user_id, **rights)
+            self.action("promotion", "promoteChatMember", chat_id=self.group_id, user_id=user_id, **rights)
             return
         if member["status"] == "restricted" and not member.get("is_member"):
             return
-        self.api.call("promoteChatMember", chat_id=self.group_id, user_id=user_id,
+        self.action("promotion", "promoteChatMember", chat_id=self.group_id, user_id=user_id,
                       can_manage_chat=True, can_delete_messages=moderation,
                       can_manage_video_chats=False, can_restrict_members=moderation,
                       can_promote_members=False, can_change_info=False,
@@ -180,7 +212,7 @@ class Bot:
         LOG.info("Compte autorisé promu administrateur : %s", user_id)
 
     def private_welcome(self, chat_id):
-        self.api.call("sendMessage", chat_id=chat_id,
+        self.action(f"welcome:{chat_id}", "sendMessage", chat_id=chat_id,
                       text=self.welcome,
                       reply_markup={"inline_keyboard": [
                           [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}], [
@@ -188,7 +220,7 @@ class Bot:
                       ]]})
 
     def show_rules(self, chat_id):
-        self.api.call("sendMessage", chat_id=chat_id, text=self.rules)
+        self.action(f"rules:{chat_id}", "sendMessage", chat_id=chat_id, text=self.rules)
 
     def publish_mp3(self, message):
         chat_id = message["chat"]["id"]
@@ -198,28 +230,28 @@ class Bot:
         # Vérifier le statut réel, sans promouvoir un compte pour cet envoi.
         member = self.api.call("getChatMember", chat_id=self.group_id, user_id=user["id"])
         if member["status"] not in ("creator", "administrator"):
-            self.api.call("sendMessage", chat_id=chat_id,
+            self.action("publication-denied", "sendMessage", chat_id=chat_id,
                           text="Seuls les administrateurs du groupe peuvent publier un MP3 via le bot.")
             return
         media = message.get("audio") or message.get("document") or {}
         filename = media.get("file_name", "").lower()
         if not (filename.endswith(".mp3") or (not filename and media.get("mime_type") == "audio/mpeg")):
-            self.api.call("sendMessage", chat_id=chat_id,
+            self.action("invalid-mp3", "sendMessage", chat_id=chat_id,
                           text="Envoyez un fichier au format MP3 (.mp3).")
             return
         try:
             # Copier le message conserve fichier, légende et métadonnées,
             # sans téléchargement sur le VPS ni mention de transfert.
-            self.api.call("copyMessage", chat_id=self.group_id,
+            self.action("mp3-copy", "copyMessage", chat_id=self.group_id,
                           from_chat_id=chat_id, message_id=message["message_id"])
         except TelegramError as error:
             if error.code not in (400, 403):
                 raise
-            self.api.call("sendMessage", chat_id=chat_id,
+            self.action("mp3-error", "sendMessage", chat_id=chat_id,
                           text="Le MP3 n'a pas pu être publié. Vérifiez que le bot peut publier dans le groupe.")
             return
         try:
-            self.api.call("sendMessage", chat_id=chat_id, text="MP3 publié dans le groupe ✅")
+            self.action("mp3-confirmation", "sendMessage", chat_id=chat_id, text="MP3 publié dans le groupe ✅")
         except TelegramError as error:
             if error.code == 429:
                 raise
@@ -230,11 +262,12 @@ class Bot:
         callback = update.get("callback_query")
         if callback:
             try:
-                self.api.call("answerCallbackQuery", callback_query_id=callback["id"])
+                if isinstance(self.api, JournalAPI):
+                    self.api.acknowledge_callback(callback["id"])
+                else:
+                    self.api.call("answerCallbackQuery", callback_query_id=callback["id"])
             except TelegramError as error:
-                if error.code != 400:
-                    raise
-                LOG.info("Bouton expiré : affichage des règles conservé.")
+                LOG.info("Acquittement du bouton indisponible (code %s), réponse conservée.", error.code)
             chat = callback.get("message", {}).get("chat", {})
             if callback.get("data") == "rules" and chat.get("type") == "private":
                 self.show_rules(chat["id"])
@@ -250,12 +283,15 @@ class Bot:
             user = message.get("from", {})
             parts = message.get("text", "").split(maxsplit=1)
             command = parts[0].lower() if parts else ""
+            if command in ("/statut", f"/statut@{self.username.lower()}"):
+                self.show_status(chat["id"], user.get("id"))
+                return
             start = command in ("/start", f"/start@{self.username.lower()}")
             if "audio" in message or "document" in message:
                 self.publish_mp3(message)
                 return
             if command in ("/id", f"/id@{self.username.lower()}"):
-                self.api.call("sendMessage", chat_id=chat["id"],
+                self.action("identity", "sendMessage", chat_id=chat["id"],
                               text=f"Votre identifiant Telegram : {user['id']}")
                 return
             if start and parts[1:] == ["rules"]:
@@ -318,6 +354,9 @@ def main():
     except ValueError:
         raise SystemExit("Les listes doivent contenir des IDs positifs ; MODERATOR_USER_IDS doit être inclus dans ADMIN_USER_IDS.") from None
     notify_chat_id = os.environ.get("NOTIFY_CHAT_ID", "").strip()
+    owner_user_id = os.environ.get("OWNER_USER_ID", "").strip() or notify_chat_id
+    if owner_user_id and (not owner_user_id.isdigit() or int(owner_user_id) <= 0):
+        raise SystemExit("OWNER_USER_ID doit être un identifiant Telegram positif.")
     visitors = None
     if notify_chat_id:
         if not notify_chat_id.isdigit() or int(notify_chat_id) <= 0:
@@ -338,7 +377,9 @@ def main():
             return
         journal = JournalAPI(api, store)
         bot = Bot(journal, username, group_id, group_url, rules, admin_ids, moderator_ids,
-                  int(notify_chat_id) if notify_chat_id else None, visitors, welcome)
+                  int(notify_chat_id) if notify_chat_id else None, visitors, welcome,
+                  int(owner_user_id) if owner_user_id else None,
+                  os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"))
         bot.background = store
         def handle_task(kind, payload):
             if kind == "update":
