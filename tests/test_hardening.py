@@ -81,6 +81,35 @@ class HardeningTests(unittest.TestCase):
         self.store.ingest([event(i, 99, text="/statut") for i in (6, 7, 8)])
         self.assertEqual(self.store.pending_count(), 6)
 
+    def test_callbacks_share_text_quota_and_replays_do_not_consume_it(self):
+        def event(i, uid=7):
+            return {"update_id": i, "callback_query": {"id": str(i), "from": {"id": uid},
+                    "data": "rules", "message": {"chat": {"id": uid, "type": "private"}}}}
+        with patch("reliability.time.time", return_value=100):
+            self.store.ingest([event(1)])
+            self.store.ingest([event(1), event(2), event(3)])
+            self.store.ingest([event(4, 99), event(5, 99), event(6, 99)])
+        self.assertEqual(self.store.pending_count(), 5)
+        with patch("reliability.time.time", return_value=111):
+            self.store.ingest([event(7)])
+        self.assertEqual(self.store.pending_count(), 6)
+
+    def test_media_limit_survives_restart_and_trusted_accounts_are_exempt(self):
+        def event(i, uid):
+            return {"update_id": i, "message": {"from": {"id": uid},
+                    "chat": {"id": uid, "type": "private"}, "document": {"file_name": "music.mp3"}}}
+        self.store.media_limit = 2
+        self.store.ingest([event(1, 7), event(2, 7), event(3, 7)])
+        self.assertEqual(self.store.pending_count(), 2)
+        self.store.close()
+        self.store = TaskStore(self.root / "tasks.sqlite3", media_limit=2,
+                               owner_user_id=99, trusted_media_ids={8})
+        self.addCleanup(self.store.close)
+        self.store.ingest([event(4, 7)] + [event(i, 8) for i in range(5, 10)] +
+                          [event(i, 99) for i in range(10, 15)])
+        self.assertEqual(self.store.pending_count(), 12)
+        self.assertEqual(self.store.offset(), 15)
+
     def test_command_window_expires(self):
         def event(i):
             return {"update_id": i, "message": {"chat": {"id": 7, "type": "private"}, "text": "/start"}}

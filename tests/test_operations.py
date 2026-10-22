@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from backups import create_backup, restore
 from bot import Bot
@@ -132,6 +132,32 @@ class BackupTests(unittest.TestCase):
             file.write(b"tampered")
         with self.assertRaisesRegex(ValueError, "Empreinte"):
             restore(snapshot, self.root / "restored")
+
+    def test_corrupt_second_database_leaves_no_partial_destination_and_can_retry(self):
+        snapshot = create_backup(self.tasks, self.visitors, self.root / "backups")
+        original = (snapshot / "visitors.sqlite3").read_bytes()
+        (snapshot / "visitors.sqlite3").write_bytes(b"corrupted")
+        destination = self.root / "restored"
+        with self.assertRaises(ValueError):
+            restore(snapshot, destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.root.glob(".restore-*")), [])
+        (snapshot / "visitors.sqlite3").write_bytes(original)
+        restore(snapshot, destination)
+        self.assertTrue((destination / "visitors.sqlite3").is_file())
+
+    def test_copy_failure_leaves_no_partial_destination(self):
+        from backups import copy_database
+        snapshot = create_backup(self.tasks, self.visitors, self.root / "backups")
+        def failing_copy(source, target):
+            copy_database(source, target)
+            if source.name == "visitors.sqlite3":
+                raise OSError("disk full")
+        with patch("backups.copy_database", side_effect=failing_copy):
+            with self.assertRaises(OSError):
+                restore(snapshot, self.root / "restored")
+        self.assertFalse((self.root / "restored").exists())
+        self.assertEqual(list(self.root.glob(".restore-*")), [])
 
     def test_retention_keeps_requested_number(self):
         for _ in range(3):

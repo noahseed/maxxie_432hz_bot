@@ -160,13 +160,13 @@ Pour tester manuellement une restauration, choisir un dossier de sauvegarde `bac
 sudo -u maxxie-bot python3 /opt/maxxie-bot/backups.py --restore /var/lib/maxxie-bot/backups/backup-CHOISIE --restore-to /var/lib/maxxie-bot/restauration-test
 ```
 
-La commande vérifie les empreintes, refuse tout écrasement et ne touche pas aux bases actives. Les tâches en attente d'une ancienne sauvegarde sont neutralisées en état `uncertain` : elles ont peut-être été exécutées depuis la sauvegarde. Les réactiver aveuglément pourrait republier des MP3.
+La commande vérifie les empreintes, refuse tout écrasement et ne touche pas aux bases actives. La restauration et la neutralisation des anciennes tâches se font dans un dossier temporaire ; le dossier final ne reçoit les bases qu’après validation complète. Un échec de copie ou de validation ne laisse pas de restauration partielle à la destination. Les tâches en attente d'une ancienne sauvegarde sont neutralisées en état `uncertain` : elles ont peut-être été exécutées depuis la sauvegarde. Les réactiver aveuglément pourrait republier des MP3.
 
 Pour rétablir réellement ces bases : arrêter le timer, le service de sauvegarde et le bot ; conserver à part les bases actuelles et leurs éventuels fichiers `-wal`/`-shm` ; installer les deux fichiers restaurés à leurs chemins configurés, avec propriétaire `maxxie-bot` et permissions `600` ; redémarrer le bot et le timer. Ne jamais mélanger une base restaurée avec un ancien WAL. Vérifier `/statut`, les journaux et le groupe avant de traiter manuellement les tâches incertaines. La restauration revient à la date de la sauvegarde et peut aussi faire oublier des visiteurs signalés depuis.
 
 ## Protection contre les commandes répétées
 
-La réception conserve au maximum cinq messages textuels privés par utilisateur sur une fenêtre de dix secondes. Les suivants sont ignorés sans réponse supplémentaire, pour ne pas amplifier un spam. Le compteur survit aux redémarrages et les reprises d'une même mise à jour ne consomment pas de nouveau quota. Le propriétaire configuré dans `OWNER_USER_ID` et les fichiers MP3 ne sont pas limités. Les anciennes entrées de compteur sont nettoyées après une journée.
+La réception conserve au maximum cinq messages textuels ou clics de bouton privés par utilisateur sur une fenêtre commune de dix secondes. Les suivants sont ignorés sans réponse supplémentaire, pour ne pas amplifier un spam. Le compteur survit aux redémarrages et les reprises d'une même mise à jour ne consomment pas de nouveau quota. Les fichiers audio et documents ont un quota séparé de vingt en dix secondes. Le propriétaire configuré dans `OWNER_USER_ID` est exempt de ces limites ; les comptes dans `ADMIN_USER_IDS` sont également exempts du quota de fichiers. Les autres administrateurs peuvent publier avec le quota de fichiers normal. Les anciennes entrées de compteur sont nettoyées après une journée.
 
 ## Copie chiffrée sur l'ordinateur via SSH
 

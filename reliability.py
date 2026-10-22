@@ -23,11 +23,14 @@ class UncertainAction(Exception):
 
 
 class TaskStore:
-    def __init__(self, path, command_limit=5, command_window=10, owner_user_id=None):
+    def __init__(self, path, command_limit=5, command_window=10, owner_user_id=None,
+                 media_limit=20, trusted_media_ids=()):
         self.lock = threading.RLock()
         self.instance_lock = None
         self.command_limit, self.command_window = command_limit, command_window
         self.owner_user_id = owner_user_id
+        self.media_limit = media_limit
+        self.trusted_media_ids = frozenset(trusted_media_ids)
         if str(path) != ":memory:":
             self.instance_lock = open(str(path) + ".lock", "a", encoding="utf-8")
             try:
@@ -41,6 +44,7 @@ class TaskStore:
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value INTEGER);
             CREATE TABLE IF NOT EXISTS command_limits (user_id INTEGER PRIMARY KEY, started REAL, count INTEGER);
+            CREATE TABLE IF NOT EXISTS media_limits (user_id INTEGER PRIMARY KEY, started REAL, count INTEGER);
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY, update_id INTEGER UNIQUE, kind TEXT NOT NULL,
                 payload TEXT NOT NULL, dedupe TEXT, lane INTEGER NOT NULL,
@@ -117,19 +121,27 @@ class TaskStore:
             for update in updates:
                 if update["update_id"] < offset:
                     continue
-                message = update.get("message", {})
+                callback = update.get("callback_query", {})
+                message = callback.get("message", {}) if callback else update.get("message", {})
                 chat = message.get("chat", {})
-                user_id = message.get("from", {}).get("id", chat.get("id"))
+                user_id = (callback if callback else message).get("from", {}).get("id", chat.get("id"))
+                media = "audio" in message or "document" in message
                 limited = False
-                if chat.get("type") == "private" and "text" in message and user_id != self.owner_user_id:
-                    now = time.time()
-                    row = self.db.execute("SELECT started,count FROM command_limits WHERE user_id=?", (user_id,)).fetchone()
-                    if row and now - row[0] < self.command_window:
-                        limited = row[1] >= self.command_limit
-                        if not limited:
-                            self.db.execute("UPDATE command_limits SET count=count+1 WHERE user_id=?", (user_id,))
-                    else:
-                        self.db.execute("INSERT OR REPLACE INTO command_limits VALUES (?,?,1)", (user_id, now))
+                if chat.get("type") == "private" and user_id != self.owner_user_id:
+                    table, limit = None, self.command_limit
+                    if callback or "text" in message:
+                        table = "command_limits"
+                    elif media and user_id not in self.trusted_media_ids:
+                        table, limit = "media_limits", self.media_limit
+                    if table:
+                        now = time.time()
+                        row = self.db.execute(f"SELECT started,count FROM {table} WHERE user_id=?", (user_id,)).fetchone()
+                        if row and now - row[0] < self.command_window:
+                            limited = row[1] >= limit
+                            if not limited:
+                                self.db.execute(f"UPDATE {table} SET count=count+1 WHERE user_id=?", (user_id,))
+                        else:
+                            self.db.execute(f"INSERT OR REPLACE INTO {table} VALUES (?,?,1)", (user_id, now))
                 if limited:
                     offset = max(offset, update["update_id"] + 1)
                     continue
@@ -183,6 +195,7 @@ class TaskStore:
         # par l'offset persistant, même une fois leur journal nettoyé.
         with self.lock, self.db:
             self.db.execute("DELETE FROM command_limits WHERE started<?", (time.time() - 86400,))
+            self.db.execute("DELETE FROM media_limits WHERE started<?", (time.time() - 86400,))
             self.db.execute("DELETE FROM actions WHERE task_id IN (SELECT id FROM tasks "
                             "WHERE status NOT IN ('pending','running') AND updated<?)", (time.time() - 30 * 86400,))
             self.db.execute("DELETE FROM tasks WHERE status NOT IN ('pending','running') AND updated<?",

@@ -388,7 +388,8 @@ def main():
         signal.signal(signum, lambda *_: stop.set())
     api = Telegram(token, ipv4_only=os.environ.get("TELEGRAM_IPV4_ONLY", "1") == "1")
     store = TaskStore(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"),
-                      owner_user_id=int(owner_user_id) if owner_user_id else None)
+                      owner_user_id=int(owner_user_id) if owner_user_id else None,
+                      trusted_media_ids=admin_ids)
     workers = []
     try:
         username = wait_for_startup(api, stop)

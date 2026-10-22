@@ -41,20 +41,31 @@ def restore(snapshot, destination):
     manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
     if set(manifest["files"]) != {"tasks.sqlite3", "visitors.sqlite3"}:
         raise ValueError("Manifest de sauvegarde inattendu")
-    destination.mkdir(mode=0o700, parents=False, exist_ok=False)
-    for name, expected in manifest["files"].items():
-        source = snapshot / name
-        if source.is_symlink() or digest(source) != expected:
-            raise ValueError("Empreinte de sauvegarde invalide")
-        copy_database(source, destination / name)
-    # Une sauvegarde peut précéder des envois réellement effectués depuis.
-    # Ne jamais rejouer aveuglément ses anciennes tâches lors d'une restauration.
-    with closing(sqlite3.connect(destination / "tasks.sqlite3")) as db, db:
-        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone():
-            db.execute("UPDATE tasks SET status='uncertain',payload='{}' WHERE status IN ('pending','running')")
-            db.execute("UPDATE actions SET status='uncertain' WHERE status IN ('pending','sending')")
-            if "request" in {row[1] for row in db.execute("PRAGMA table_info(actions)")}:
-                db.execute("UPDATE actions SET request=NULL")
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError("La destination existe déjà")
+    with tempfile.TemporaryDirectory(prefix=".restore-", dir=destination.parent) as temporary:
+        staging = Path(temporary) / "validated"
+        staging.mkdir(mode=0o700)
+        for name, expected in manifest["files"].items():
+            source = snapshot / name
+            if source.is_symlink() or digest(source) != expected:
+                raise ValueError("Empreinte de sauvegarde invalide")
+            copy_database(source, staging / name)
+        # Une sauvegarde peut précéder des envois réellement effectués depuis.
+        # Ne jamais rejouer aveuglément ses anciennes tâches lors d'une restauration.
+        with closing(sqlite3.connect(staging / "tasks.sqlite3")) as db, db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone():
+                db.execute("UPDATE tasks SET status='uncertain',payload='{}' WHERE status IN ('pending','running')")
+                db.execute("UPDATE actions SET status='uncertain' WHERE status IN ('pending','sending')")
+                if "request" in {row[1] for row in db.execute("PRAGMA table_info(actions)")}:
+                    db.execute("UPDATE actions SET request=NULL")
+        # Réserver sans écraser une destination créée pendant les contrôles.
+        destination.mkdir(mode=0o700, exist_ok=False)
+        try:
+            staging.rename(destination)
+        except BaseException:
+            destination.rmdir()
+            raise
     return destination
 
 
