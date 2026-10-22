@@ -313,7 +313,9 @@ class Bot:
                 self.action("identity", "sendMessage", chat_id=chat["id"],
                               text=f"Votre identifiant Telegram : {user['id']}")
                 return
-            if start and parts[1:] == ["rules"]:
+            if not start:
+                return
+            if parts[1:] == ["rules"]:
                 self.show_rules(chat["id"])
             else:
                 self.private_welcome(chat["id"])

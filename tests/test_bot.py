@@ -79,6 +79,17 @@ class WelcomeTests(unittest.TestCase):
         self.assertEqual(keyboard[0][0]["callback_data"], "rules")
         self.assertEqual(keyboard[1][0]["url"], "https://t.me/Maxxie_432Hz")
 
+    def test_unknown_commands_and_other_private_messages_are_silent(self):
+        for body in ({"text": "/inconnue"}, {"text": "/start@AutreBot"},
+                     {"text": "/starting"}, {"text": "Bonjour"},
+                     {"sticker": {"file_id": "example"}}, {"photo": []},
+                     {"voice": {"file_id": "example"}}, {}):
+            with self.subTest(body=body):
+                self.api.reset_mock()
+                self.bot.handle({"message": {"chat": {"id": 7, "type": "private"},
+                                              "from": {"id": 7}, **body}})
+                self.api.call.assert_not_called()
+
     def test_rules_button_displays_rules_in_private(self):
         self.bot.handle({"callback_query": {"id": "abc", "data": "rules",
                                             "message": {"chat": {"id": 7, "type": "private"}}}})
