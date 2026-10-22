@@ -83,7 +83,7 @@ class OperationsTests(unittest.TestCase):
         raw = Mock()
         bot = Bot(raw, "TestBot", "-42", "url", "Règles", owner_user_id=99)
         bot.background = self.store
-        for command in ("/statut", "/status", "/statut@TestBot", "/status@TestBot", "/STATUS"):
+        for command in ("/statut", "/statut@TestBot", "/STATUT"):
             with self.subTest(command=command):
                 raw.reset_mock()
                 for uid in (7, 99):

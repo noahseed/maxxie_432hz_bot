@@ -4,7 +4,7 @@ Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
 
 ## Fonctionnement
 
-- La commande privée `/start` affiche l'accueil avec deux boutons : « Lire les règles du groupe » et « Rejoindre le groupe ». Le premier affiche le règlement en privé ; le second ouvre le lien du groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/id`, `/statut`, `/status` et la publication des MP3 gardent leur fonctionnement dédié.
+- La commande privée `/start` affiche l'accueil avec deux boutons : « Lire les règles du groupe » et « Rejoindre le groupe ». Le premier affiche le règlement en privé ; le second ouvre le lien du groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
 - L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les deux boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
 - Le règlement reste en privé. Les messages ordinaires du groupe sont ignorés.
 - Le lien du groupe est accessible à toute personne contactant le bot. Il ne s'agit pas d'un contrôle d'admission ni d'une obligation d'accepter les règles.
@@ -133,9 +133,9 @@ sudo journalctl -u maxxie-bot -n 100 --no-pager
 
 Un verrou de fichier exclusif refuse une seconde instance avant toute récupération des tâches. Une seule instance du bot doit utiliser les bases et le jeton. Une fois cette version déployée, conserver les bases lors des mises à jour pour préserver le suivi et la prévention des doublons.
 
-## Commandes privées /statut et /status
+## Commande privée /statut
 
-`/status` est un alias de `/statut` ; les deux commandes affichent le même diagnostic. `OWNER_USER_ID` désigne le seul compte autorisé à consulter `/statut` (à défaut, l'identifiant privé `NOTIFY_CHAT_ID` est utilisé). Les administrateurs du groupe n'obtiennent pas ce droit automatiquement. La commande fonctionne uniquement en privé et indique le nombre de tâches en attente, en cours, terminées, échouées ou incertaines, les identifiants des cinq dernières tâches à vérifier et la date de la dernière sauvegarde contrôlée. Une sauvegarde de plus de 36 heures, ou dont le dossier a disparu, déclenche un avertissement dans la réponse. Aucun contenu des messages, jeton ou chemin privé n'est transmis.
+`OWNER_USER_ID` désigne le seul compte autorisé à consulter `/statut` (à défaut, l'identifiant privé `NOTIFY_CHAT_ID` est utilisé). Les administrateurs du groupe n'obtiennent pas ce droit automatiquement. La commande fonctionne uniquement en privé et indique le nombre de tâches en attente, en cours, terminées, échouées ou incertaines, les identifiants des cinq dernières tâches à vérifier et la date de la dernière sauvegarde contrôlée. Une sauvegarde de plus de 36 heures, ou dont le dossier a disparu, déclenche un avertissement dans la réponse. Aucun contenu des messages, jeton ou chemin privé n'est transmis.
 
 ## Sauvegardes quotidiennes et restauration
 

@@ -80,7 +80,9 @@ class WelcomeTests(unittest.TestCase):
         self.assertEqual(keyboard[1][0]["url"], "https://t.me/Maxxie_432Hz")
 
     def test_unknown_commands_and_other_private_messages_are_silent(self):
-        for body in ({"text": "/inconnue"}, {"text": "/start@AutreBot"},
+        for body in ({"text": "/inconnue"}, {"text": "/status"},
+                     {"text": "/status@MaxxieBot"}, {"text": "/STATUS"},
+                     {"text": "/start@AutreBot"},
                      {"text": "/starting"}, {"text": "Bonjour"},
                      {"sticker": {"file_id": "example"}}, {"photo": []},
                      {"voice": {"file_id": "example"}}, {}):

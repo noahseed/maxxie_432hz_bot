@@ -301,8 +301,7 @@ class Bot:
             user = message.get("from", {})
             parts = message.get("text", "").split(maxsplit=1)
             command = parts[0].lower() if parts else ""
-            if command in ("/statut", "/status", f"/statut@{self.username.lower()}",
-                           f"/status@{self.username.lower()}"):
+            if command in ("/statut", f"/statut@{self.username.lower()}"):
                 self.show_status(chat["id"], user.get("id"))
                 return
             start = command in ("/start", f"/start@{self.username.lower()}")
