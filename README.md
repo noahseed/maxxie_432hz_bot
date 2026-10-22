@@ -48,7 +48,7 @@ Les commandes `sudo` suivantes sont à exécuter sur le VPS. Copier d'abord le p
 
 ```bash
 ssh UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr 'mkdir -p ~/maxxie-bot'
-scp bot.py rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
+scp bot.py reliability.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 scp deploy/maxxie-bot.service deploy/configure.py UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 ```
 
@@ -59,7 +59,7 @@ sudo apt-get update
 sudo apt-get install -y python3 ca-certificates
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin maxxie-bot
 sudo install -d -m 755 /opt/maxxie-bot
-sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/rules.txt /opt/maxxie-bot/
+sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
 sudo install -m 644 ~/maxxie-bot/configure.py /opt/maxxie-bot/
 sudo install -m 600 ~/maxxie-bot/.env.example /etc/maxxie-bot.env
 sudo nano /etc/maxxie-bot.env
@@ -79,7 +79,7 @@ Si l'utilisateur système existe déjà, ne pas répéter `useradd`. Pour une mi
 
 Le service utilise le long polling : seules des connexions HTTPS sortantes vers Telegram sont nécessaires. Aucun serveur web, certificat TLS ou port entrant supplémentaire n'est requis. Ne lancer qu'une instance avec ce jeton ; un webhook déjà configuré doit être retiré avant utilisation. Le bot refuse de supprimer automatiquement un webhook existant.
 
-Le bot conserve uniquement les identifiants des visiteurs déjà signalés, pas leurs messages. Telegram conserve les mises à jour en attente : elles peuvent être traitées au démarrage. Une interruption après l'envoi d'un message et avant sa confirmation peut occasionner un doublon.
+Le bot conserve les identifiants des visiteurs déjà signalés et une file de tâches SQLite protégée. Les événements en attente sont enregistrés avant leur confirmation auprès de Telegram. Leurs données sont effacées une fois le traitement terminé ; les métadonnées de diagnostic sont conservées 30 jours.
 
 ## Administrateurs reconnus automatiquement
 
@@ -101,7 +101,7 @@ Les MP3 sont acceptés comme audio ou document, selon leur extension `.mp3` (ou 
 
 Configurer `NOTIFY_CHAT_ID` avec l'identifiant numérique du destinataire privé, puis redémarrer le service. Le destinataire doit avoir démarré le bot et ne pas l'avoir bloqué. À son premier `/start` privé (y compris un lien `/start rules`), chaque utilisateur déclenche une notification contenant son nom affiché, son @pseudo éventuel et son identifiant Telegram. Les messages ordinaires et les commandes du groupe ne déclenchent aucune notification.
 
-Les identifiants signalés sont conservés dans `VISITORS_DB` (par défaut `/var/lib/maxxie-bot/visitors.sqlite3`). Le service systemd crée ce dossier privé avec `StateDirectory=maxxie-bot`. Seuls les identifiants sont stockés, pas les messages ni les noms. Le suivi commence à l'activation : un ancien utilisateur qui refait `/start` sera donc signalé une fois. Une notification échouée n'empêche pas l'accueil et pourra être retentée à son prochain `/start`. Une interruption entre l'envoi et l'enregistrement peut exceptionnellement entraîner un doublon.
+Les identifiants signalés sont conservés dans `VISITORS_DB` (par défaut `/var/lib/maxxie-bot/visitors.sqlite3`). Le service systemd crée ce dossier privé avec `StateDirectory=maxxie-bot`. Seuls les identifiants sont stockés, pas les messages ni les noms. Le suivi commence à l'activation : un ancien utilisateur qui refait `/start` sera donc signalé une fois. Une notification refusée temporairement est retentée automatiquement ; un refus permanent (bot bloqué, par exemple) ne bloque pas l'accueil et pourra être retenté à un prochain `/start`. Une interruption entre l'envoi et l'enregistrement peut exceptionnellement entraîner un doublon.
 
 ## Réactivité et réseau
 
@@ -109,16 +109,36 @@ Le client réutilise les connexions HTTPS, avec une connexion distincte par thre
 
 `TELEGRAM_IPV4_ONLY=1` est le réglage par défaut pour éviter la route IPv6 défaillante observée sur ce VPS (un simple appel avait pris 46 secondes). La résolution DNS et la validation TLS du nom `api.telegram.org` sont conservées, sans IP codée en dur. Sur un serveur avec IPv6 fonctionnel, `TELEGRAM_IPV4_ONLY=0` permet les deux familles.
 
-L'accueil privé est envoyé avant les notifications au propriétaire et les promotions. Ces tâches secondaires s'exécutent dans une file en arrière-plan, limitée à 128 tâches, avec dédoublonnage des tâches en attente. Un arrêt du service peut interrompre une tâche en attente ; un prochain `/start` ou événement de membre permettra une nouvelle tentative. Les messages ordinaires ne déclenchent plus de vérification de promotion ; les arrivées, changements de statut et `/start` restent pris en charge. L'autorisation de publier un MP3 est toujours vérifiée auprès de Telegram à chaque envoi, sans cache de droits.
+Les événements et actions en attente sont enregistrés dans `STATE_DB` (par défaut `/var/lib/maxxie-bot/tasks.sqlite3`). Deux threads traitent séparément les réponses aux utilisateurs et les notifications/promotions. La réception Telegram est indépendante des envois ; à partir de 1000 tâches en attente, elle ralentit pour laisser les traitements rattraper leur retard, sans supprimer les tâches déjà reçues.
 
-Les appels d'action dépassant une seconde sont journalisés avec leur méthode et leur durée, sans jeton ni contenu des messages. Un bouton expiré ne bloque plus l'affichage des règles. Le long polling renvoie immédiatement les nouvelles mises à jour : ses 30 secondes d'attente ne sont pas un délai imposé aux réponses.
+Une erreur 429 reprogramme la tâche après le délai `retry_after`. Les étapes déjà confirmées ne sont pas rejouées : si la copie du MP3 a réussi mais sa confirmation privée est refusée temporairement, seule cette dernière sera renvoyée. Les erreurs temporaires de lecture sont également retentées, jusqu'à 8 tentatives par tâche. Les refus permanents sont journalisés sans boucle infinie.
 
-En cas d'erreur d'une action, la mise à jour entière n'est pas rejouée automatiquement, pour ne pas répéter une copie MP3 ou un message déjà accepté. Après une panne ou une limitation Telegram, l'utilisateur peut devoir renvoyer sa commande ; vérifier le groupe avant de renvoyer un MP3 dont le résultat est incertain. La récupération des nouvelles mises à jour continue de respecter les délais `retry_after` de Telegram.
+Le journal enregistre l'intention d'envoi avant la requête, puis son résultat confirmé. Si le service s'arrête pendant un envoi ou si la connexion coupe sans confirmation, l'état devient **incertain** : aucun renvoi automatique de cette action, car Telegram a peut-être accepté le fichier. Cette précaution réduit les doublons mais ne garantit pas une livraison exactement une fois. Vérifier le groupe avant de renvoyer un MP3 signalé comme incertain. Les appels de lecture restent retentables.
+
+Les connexions HTTPS sont réutilisées. Les appels d'action dépassant une seconde sont journalisés avec leur méthode et leur durée, sans jeton ni contenu des messages. Un bouton expiré ne bloque plus l'affichage des règles. Le long polling renvoie immédiatement les nouveaux événements : ses 30 secondes d'attente ne sont pas un délai imposé aux réponses.
+
+Au démarrage, une panne réseau ou Telegram entraîne une nouvelle tentative avec attente progressive (jusqu'à 60 secondes), au lieu de faire quitter le service. Un jeton refusé ou un webhook existant restent des erreurs explicites. SIGTERM/SIGINT arrêtent la réception et laissent terminer les tâches en cours ; les tâches restantes reprennent au prochain démarrage.
+
+## Stockage, accueil et diagnostic
+
+`WELCOME_FILE` pointe vers `welcome.txt`, qui contient le texte du menu d'accueil. Modifier ce fichier puis redémarrer le service ; les deux boutons sont conservés. Ne pas écraser un fichier personnalisé lors d'une mise à jour.
+
+Les événements en attente peuvent contenir le texte privé, le nom affiché, le pseudonyme et les références des fichiers Telegram. Les MP3 eux-mêmes ne sont jamais téléchargés. Le dossier `/var/lib/maxxie-bot` est réservé au compte du service ; les fichiers SQLite ne sont pas versionnés dans Git. Les données des tâches terminées ou abandonnées sont effacées, puis leurs métadonnées et empreintes d'actions sont nettoyées après 30 jours. Une tâche en attente peut conserver ses données pendant une longue indisponibilité. Sauvegarder les bases avec l'API de sauvegarde SQLite ou après arrêt du service, en tenant compte des fichiers WAL ; ne pas copier seulement le fichier principal pendant son utilisation.
+
+Pour surveiller les erreurs et les envois incertains :
+
+```bash
+sudo journalctl -u maxxie-bot -n 100 --no-pager
+```
+
+Une seule instance du bot doit utiliser les bases et le jeton. Une fois cette version déployée, conserver les bases lors des mises à jour pour préserver le suivi et la prévention des doublons.
 
 ## Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+GitHub Actions exécute automatiquement ces tests sur Python 3.11 et 3.13 à chaque push et pull request. Les tests simulent les erreurs 429, coupures réseau, interruptions pendant les envois, redémarrages et une file de plus de 128 tâches, sans contacter Telegram.
 
 Après installation : contacter le bot en privé, vérifier les deux boutons ; faire rejoindre ce compte au groupe et vérifier la réception de l'accueil en privé, sans publication du bot dans le groupe. Un membre n'ayant jamais ouvert le bot ou l'ayant bloqué ne doit pas recevoir d'accueil. Vérifier aussi que le bot reste silencieux pendant une conversation ordinaire.

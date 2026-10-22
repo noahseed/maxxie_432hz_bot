@@ -14,6 +14,7 @@ EnvironmentFile=/etc/maxxie-bot.env
 ExecStart=/usr/bin/python3 /opt/maxxie-bot/bot.py
 Restart=on-failure
 RestartSec=15
+TimeoutStopSec=90
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

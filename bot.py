@@ -6,9 +6,11 @@ import sqlite3
 import socket
 import threading
 from http.client import HTTPSConnection, HTTPException
-from queue import Queue, Full
+import signal
 from pathlib import Path
 import time
+
+from reliability import JournalAPI, READ_METHODS, TaskStore, TelegramError, Worker
 
 LOG = logging.getLogger("maxxie")
 
@@ -30,41 +32,6 @@ class StartVisitors:
             self.db.commit()
 
 
-class BackgroundTasks:
-    """Tâches secondaires séquentielles, sans bloquer les réponses privées."""
-    def __init__(self):
-        self.queue = Queue(maxsize=128)
-        self.pending = set()
-        self.lock = threading.Lock()
-        threading.Thread(target=self._run, name="notifications", daemon=True).start()
-
-    def submit(self, function, user):
-        key = (function.__name__, user.get("id"))
-        with self.lock:
-            if key in self.pending:
-                return
-            self.pending.add(key)
-            try:
-                self.queue.put_nowait((key, function, dict(user)))
-            except Full:
-                self.pending.discard(key)
-                LOG.warning("File de tâches secondaires pleine : tâche reportée à un prochain événement.")
-
-    def _run(self):
-        while True:
-            key, function, user = self.queue.get()
-            try:
-                function(user)
-            except TelegramError as error:
-                LOG.warning("Tâche %s impossible (code %s).", key[0], error.code)
-            except Exception as error:
-                LOG.error("Tâche %s interrompue (%s).", key[0], type(error).__name__)
-            finally:
-                with self.lock:
-                    self.pending.discard(key)
-                self.queue.task_done()
-
-
 def connect_ipv4(address, timeout, source_address=None):
     """Éviter une route IPv6 défaillante sans modifier le réseau du VPS."""
     host, port = address
@@ -83,13 +50,6 @@ def connect_ipv4(address, timeout, source_address=None):
     raise last_error or OSError("Aucune adresse IPv4 disponible")
 
 
-class TelegramError(Exception):
-    def __init__(self, code, retry_after=5):
-        self.code = code
-        self.retry_after = retry_after
-        super().__init__(f"Telegram error {code}")
-
-
 class Telegram:
     def __init__(self, token, ipv4_only=True):
         self.path = f"/bot{token}/"
@@ -105,7 +65,7 @@ class Telegram:
     def call(self, method, **params):
         started = time.monotonic()
         read_timeout = params.get("timeout", 30) + 5 if method == "getUpdates" else 8
-        safe_to_retry = method in ("getMe", "getChat", "getChatMember", "getWebhookInfo", "getUpdates")
+        safe_to_retry = method in READ_METHODS
         for attempt in range(2):
             connection = getattr(self.local, "connection", None)
             if connection and time.monotonic() - getattr(self.local, "last_used", 0) > 20:
@@ -150,7 +110,7 @@ class Telegram:
 
 class Bot:
     def __init__(self, api, username, group_id, group_url, rules, admin_ids=(), moderator_ids=(),
-                 notify_chat_id=None, visitors=None):
+                 notify_chat_id=None, visitors=None, welcome=None):
         self.api = api
         self.username = username
         self.group_id = group_id
@@ -160,6 +120,7 @@ class Bot:
         self.moderator_ids = frozenset(moderator_ids)
         self.notify_chat_id = notify_chat_id
         self.visitors = visitors
+        self.welcome = welcome if welcome is not None else Path(__file__).with_name("welcome.txt").read_text(encoding="utf-8").strip()
         self.background = None
 
     def later(self, function, user):
@@ -184,7 +145,9 @@ class Bot:
                           text=f"Nouveau visiteur du bot 👋\n\n{name}\n{username}\n"
                                f"Identifiant Telegram : {user_id}\nA démarré le bot avec /start.")
         except TelegramError as error:
-            # Un échec de notification ne bloque jamais l'accueil du visiteur.
+            if error.code == 429 or error.code == 0 or error.code >= 500:
+                raise
+            # Un refus permanent ne bloque jamais l'accueil du visiteur.
             LOG.warning("Notification de visiteur impossible (code %s).", error.code)
             return
         self.visitors.remember(user_id)
@@ -218,11 +181,7 @@ class Bot:
 
     def private_welcome(self, chat_id):
         self.api.call("sendMessage", chat_id=chat_id,
-                      text="Bienvenue chez Maxxie 432Hz ! 🎵\n\n"
-                           'Ce Bot gère le groupe "Maxxie 432Hz".\n'
-                           "Il s'agit d'un groupe de partage de musiques converties en 432Hz "
-                           "(Variétés Françaises et Internationales)\n\n"
-                           "Choisissez une option :",
+                      text=self.welcome,
                       reply_markup={"inline_keyboard": [
                           [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}], [
                           {"text": "Rejoindre le groupe 🎵", "url": self.group_url}
@@ -261,7 +220,9 @@ class Bot:
             return
         try:
             self.api.call("sendMessage", chat_id=chat_id, text="MP3 publié dans le groupe ✅")
-        except TelegramError:
+        except TelegramError as error:
+            if error.code == 429:
+                raise
             # Une confirmation privée en échec ne doit pas republier le MP3.
             LOG.warning("MP3 publié, mais confirmation privée impossible.")
 
@@ -318,6 +279,24 @@ class Bot:
                     LOG.info("Accueil privé impossible : conversation non ouverte ou bot bloqué.")
 
 
+def wait_for_startup(api, stop):
+    delay = 2
+    while not stop.is_set():
+        try:
+            username = api.call("getMe")["username"]
+            if api.call("getWebhookInfo").get("url"):
+                raise SystemExit("Un webhook existe déjà. Désactivez-le avant de démarrer ce service.")
+            return username
+        except TelegramError as error:
+            if error.code not in (0, 429) and error.code < 500:
+                raise SystemExit(f"Connexion Telegram refusée (code {error.code}).") from None
+            wait = max(1, error.retry_after) if error.code == 429 else delay
+            LOG.warning("Démarrage : Telegram indisponible (code %s), nouvelle tentative dans %ss.", error.code, wait)
+            stop.wait(wait)
+            delay = min(60, delay * 2)
+    return None
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     token = os.environ.get("BOT_TOKEN", "").strip()
@@ -331,14 +310,6 @@ def main():
     rules = rules_path.read_text(encoding="utf-8").strip()
     if not rules or len(rules) > 3500:
         raise SystemExit("Le règlement doit contenir entre 1 et 3500 caractères.")
-    api = Telegram(token, ipv4_only=os.environ.get("TELEGRAM_IPV4_ONLY", "1") == "1")
-    try:
-        username = api.call("getMe")["username"]
-        webhook = api.call("getWebhookInfo")
-        if webhook.get("url"):
-            raise SystemExit("Un webhook existe déjà. Désactivez-le avant de démarrer ce service.")
-    except TelegramError as error:
-        raise SystemExit(f"Connexion Telegram impossible (code {error.code}).") from None
     try:
         admin_ids = {int(value.strip()) for value in os.environ.get("ADMIN_USER_IDS", "").split(",") if value.strip()}
         moderator_ids = {int(value.strip()) for value in os.environ.get("MODERATOR_USER_IDS", "").split(",") if value.strip()}
@@ -352,31 +323,64 @@ def main():
         if not notify_chat_id.isdigit() or int(notify_chat_id) <= 0:
             raise SystemExit("NOTIFY_CHAT_ID doit être l'identifiant positif du destinataire privé.")
         visitors = StartVisitors(os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"))
-    bot = Bot(api, username, group_id, group_url, rules, admin_ids, moderator_ids,
-              int(notify_chat_id) if notify_chat_id else None, visitors)
-    bot.background = BackgroundTasks()
-    offset = 0
-    LOG.info("Bot démarré : @%s", username)
-    while True:
-        try:
-            updates = api.call("getUpdates", offset=offset, timeout=30,
-                               allowed_updates=["message", "chat_member", "callback_query"])
-            for update in updates:
-                try:
-                    bot.handle(update)
-                except TelegramError as error:
-                    if error.code in (401, 404, 409):
-                        raise
-                    # Ne pas rejouer une mise à jour entière : l'envoi a pu
-                    # réussir avant une coupure de sa réponse HTTP.
-                    LOG.warning("Mise à jour %s interrompue (code %s), sans renvoi automatique.",
-                                update["update_id"], error.code)
-                offset = update["update_id"] + 1
-        except TelegramError as error:
-            if error.code in (401, 404, 409):
-                raise SystemExit(f"Service arrêté (code Telegram {error.code}). Vérifiez le jeton et les autres instances.") from None
-            LOG.warning("Telegram indisponible (code %s), nouvelle tentative.", error.code)
-            time.sleep(max(1, error.retry_after))
+    welcome = Path(os.environ.get("WELCOME_FILE", str(Path(__file__).with_name("welcome.txt")))).read_text(encoding="utf-8").strip()
+    if not welcome or len(welcome) > 3500:
+        raise SystemExit("Le message d'accueil doit contenir entre 1 et 3500 caractères.")
+    stop = threading.Event()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, lambda *_: stop.set())
+    api = Telegram(token, ipv4_only=os.environ.get("TELEGRAM_IPV4_ONLY", "1") == "1")
+    store = TaskStore(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"))
+    workers = []
+    try:
+        username = wait_for_startup(api, stop)
+        if username is None:
+            return
+        journal = JournalAPI(api, store)
+        bot = Bot(journal, username, group_id, group_url, rules, admin_ids, moderator_ids,
+                  int(notify_chat_id) if notify_chat_id else None, visitors, welcome)
+        bot.background = store
+        def handle_task(kind, payload):
+            if kind == "update":
+                bot.handle(payload)
+            elif kind == "notify_new_visitor":
+                bot.notify_new_visitor(payload)
+            elif kind == "promote_known":
+                bot.promote_known(payload)
+            else:
+                raise ValueError("Tâche inconnue")
+        workers = [Worker(store, journal, handle_task, lane, stop) for lane in (0, 1)]
+        for worker in workers:
+            worker.thread.start()
+        LOG.info("Bot démarré : @%s ; file persistante active.", username)
+        last_cleanup = 0
+        while not stop.is_set():
+            if not all(worker.thread.is_alive() for worker in workers):
+                raise RuntimeError("Un thread de traitement s'est arrêté")
+            try:
+                if store.pending_count() >= 1000:
+                    stop.wait(1)  # Ralentir la réception sans abandonner de tâche.
+                    continue
+                updates = api.call("getUpdates", offset=store.offset(), timeout=30, limit=50,
+                                   allowed_updates=["message", "chat_member", "callback_query"])
+                store.ingest(updates)
+                if time.monotonic() - last_cleanup > 3600:
+                    store.cleanup()
+                    last_cleanup = time.monotonic()
+            except TelegramError as error:
+                if error.code in (401, 404, 409):
+                    raise SystemExit(f"Réception arrêtée (code Telegram {error.code}). Vérifiez le jeton et les autres instances.") from None
+                LOG.warning("Réception Telegram indisponible (code %s).", error.code)
+                stop.wait(max(1, error.retry_after))
+    finally:
+        stop.set()
+        for worker in workers:
+            worker.thread.join(timeout=20)
+        if not any(worker.thread.is_alive() for worker in workers):
+            store.close()
+            if visitors:
+                visitors.db.close()
+        api.close()
 
 
 if __name__ == "__main__":

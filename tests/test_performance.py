@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bot import BackgroundTasks, Bot, StartVisitors, Telegram, TelegramError, connect_ipv4
+from bot import Bot, StartVisitors, Telegram, TelegramError, connect_ipv4
+from reliability import JournalAPI, TaskStore, Worker
 
 
 class TransportTests(unittest.TestCase):
@@ -72,18 +73,33 @@ class ResponsivenessTests(unittest.TestCase):
                         raise RuntimeError("Test notification timeout")
                 return {}
             api.call.side_effect = call
-            bot = Bot(api, "MaxxieBot", "-10042", "url", "Règles", notify_chat_id=99, visitors=visitors)
-            bot.background = BackgroundTasks()
+            store = TaskStore(Path(directory) / "tasks.sqlite3")
+            journal = JournalAPI(api, store)
+            bot = Bot(journal, "MaxxieBot", "-10042", "url", "Règles", notify_chat_id=99, visitors=visitors)
+            bot.background = store
+            stop = threading.Event()
+            def handle(kind, payload):
+                if kind == "update":
+                    bot.handle(payload)
+                else:
+                    getattr(bot, kind)(payload)
+            foreground = Worker(store, journal, handle, 0, stop)
+            secondary = Worker(store, journal, handle, 1, stop)
+            def enqueue(uid):
+                store.ingest([{"update_id": uid, "message": {"chat": {"id": uid, "type": "private"},
+                               "from": {"id": uid}, "text": "/start"}}])
+                foreground.process_one()
             try:
-                bot.handle({"message": {"chat": {"id": 7, "type": "private"},
-                                        "from": {"id": 7}, "text": "/start"}})
+                enqueue(7)
+                secondary.thread.start()
                 self.assertTrue(started.wait(1))
-                bot.handle({"message": {"chat": {"id": 8, "type": "private"},
-                                        "from": {"id": 8}, "text": "/start"}})
+                enqueue(8)
                 self.assertTrue(any(c.kwargs.get("chat_id") == 8 for c in api.call.call_args_list))
             finally:
                 release.set()
-                bot.background.queue.join()
+                stop.set()
+                secondary.thread.join(3)
+                store.close()
                 visitors.db.close()
 
     def test_promotion_failure_cannot_hide_welcome(self):
