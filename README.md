@@ -4,7 +4,7 @@ Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
 
 ## Fonctionnement
 
-- La commande privée `/start` affiche l'accueil avec deux boutons : « Lire les règles du groupe » et « Rejoindre le groupe ». Le premier affiche le règlement en privé ; le second ouvre le lien du groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
+- La commande privée `/start` affiche l'accueil avec deux boutons : « Lire les règles du groupe » et « Rejoindre le groupe ». Le premier affiche le règlement en privé ; le second ouvre le lien du groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
 - L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les deux boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
 - Le règlement reste en privé. Les messages ordinaires du groupe sont ignorés.
 - Le lien du groupe est accessible à toute personne contactant le bot. Il ne s'agit pas d'un contrôle d'admission ni d'une obligation d'accepter les règles.
@@ -99,9 +99,15 @@ Les MP3 sont acceptés comme audio ou document, selon leur extension `.mp3` (ou 
 
 ## Recherche musicale et aide
 
-En privé, `/aide` présente les commandes disponibles : `/start`, `/recherche artiste ou titre`, `/aide` et `/id`. L’aide des administrateurs réels du groupe précise comment publier et indexer ; celle du propriétaire affiche également `/statut`. Les commandes peuvent être adressées au bot (`/aide@Maxxie_432Hz_Bot`). Les commandes inconnues, notamment `/status`, restent silencieuses.
+En privé, `/aide` présente les commandes disponibles : `/start`, `/recherche artiste ou titre`, `/artistes`, `/hasard`, `/aide` et `/id`. L’aide des administrateurs réels du groupe précise comment publier et indexer ; celle du propriétaire affiche également `/statut`. Les commandes peuvent être adressées au bot (`/aide@Maxxie_432Hz_Bot`). Les commandes inconnues, notamment `/status`, restent silencieuses.
 
-Exemples : `/recherche Edith Piaf`, `/recherche vie en rose`. La recherche ignore accents et majuscules et exige la présence de tous les mots, dans n’importe quel ordre, dans le titre, l’artiste, le nom du fichier ou la légende. Elle affiche jusqu’à dix résultats avec des boutons vers les messages du groupe ; préciser la recherche si davantage de morceaux correspondent. Les recherches restent en privé et ne sont pas conservées dans le catalogue.
+Exemples : `/recherche Edith Piaf`, `/recherche vie en rose`. La recherche ignore accents et majuscules et exige la présence de tous les mots, dans n’importe quel ordre, dans le titre, l’artiste, le nom du fichier ou la légende. Elle affiche dix résultats par page avec des boutons vers les messages du groupe et « Suivant / Précédent » pour parcourir toutes les correspondances. Les réponses restent en privé.
+
+`/artistes` affiche les artistes par ordre alphabétique, avec le nombre de morceaux et dix artistes par page. Choisir un artiste ouvre ses morceaux, également paginés. Les variantes d’accents et de majuscules sont regroupées ; un artiste absent des métadonnées apparaît dans « Artiste non renseigné ». Les anciennes entrées au format « artiste — titre » sont migrées automatiquement ; les nouveaux MP3 et les imports conservent l’artiste explicitement.
+
+`/hasard` propose un morceau du groupe avec un lien pour l’écouter et un bouton « Encore au hasard ». Le fichier n’est pas renvoyé et aucun message n’est publié dans le groupe. Le même morceau peut être tiré plusieurs fois.
+
+Les boutons de navigation utilisent une session privée valable une heure, conservée dans `STATE_DB` et liée à son destinataire pour survivre à un redémarrage. Cette session contient la recherche ou l’artiste sélectionné ; les sessions expirées sont supprimées au nettoyage horaire (donc au plus tard une heure après expiration en fonctionnement normal). Les sauvegardes privées de la base peuvent en contenir une copie. Après expiration, relancer `/recherche` ou `/artistes`. Si le catalogue change pendant la navigation, les pages reflètent son état courant.
 
 Les MP3 publiés par l’intermédiaire du bot et ceux reçus directement dans le groupe configuré sont automatiquement indexés. Les modifications reçues des messages du groupe mettent à jour leur entrée. Le catalogue ne contient ni fichiers audio, ni profils de visiteurs : il est conservé dans la table `music` de `STATE_DB`, couverte par les sauvegardes existantes et conservée indépendamment du nettoyage des tâches.
 

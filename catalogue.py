@@ -1,5 +1,7 @@
 """Catalogue des MP3 du groupe, conservé dans la base SQLite des tâches."""
 import re
+import secrets
+import time
 import unicodedata
 from urllib.parse import urlsplit
 
@@ -25,6 +27,12 @@ def music_metadata(message):
     return label[:200], searchable
 
 
+def artist_metadata(message):
+    media = message.get('audio') or message.get('document') or {}
+    artist = media.get('performer', '').strip()[:300]
+    return artist, normalize(artist)
+
+
 def message_link(group_id, group_url, message_id):
     parsed = urlsplit(group_url)
     username = parsed.path.strip('/')
@@ -46,9 +54,10 @@ def index_music(store, group_id, message, message_id=None):
             store.db.execute('DELETE FROM music WHERE group_id=? AND message_id=?', (str(group_id), message_id))
         return False
     with store.lock, store.db:
-        store.db.execute('INSERT INTO music(group_id,message_id,label,searchable) VALUES (?,?,?,?) '
-                         'ON CONFLICT(group_id,message_id) DO UPDATE SET label=excluded.label,searchable=excluded.searchable',
-                         (str(group_id), message_id, *metadata))
+        store.db.execute('INSERT INTO music(group_id,message_id,label,searchable,artist,artist_key) VALUES (?,?,?,?,?,?) '
+                         'ON CONFLICT(group_id,message_id) DO UPDATE SET label=excluded.label,searchable=excluded.searchable,'
+                         'artist=excluded.artist,artist_key=excluded.artist_key',
+                         (str(group_id), message_id, *metadata, *artist_metadata(message)))
     return True
 
 
@@ -60,3 +69,53 @@ def search_music(store, group_id, query, limit=10):
     with store.lock:
         return store.db.execute('SELECT message_id,label FROM music WHERE group_id=? AND ' + conditions +
                                 ' ORDER BY message_id DESC LIMIT ?', (str(group_id), *words, limit)).fetchall()
+
+
+def create_session(store, chat_id, kind, value=''):
+    token = secrets.token_hex(8)
+    with store.lock, store.db:
+        store.db.execute('INSERT INTO browse_sessions VALUES (?,?,?,?,?)',
+                         (token, chat_id, kind, value, time.time() + 3600))
+    return token
+
+
+def get_session(store, chat_id, token):
+    with store.lock:
+        return store.db.execute('SELECT kind,value FROM browse_sessions WHERE token=? AND chat_id=? AND expires>?',
+                                (token, chat_id, time.time())).fetchone()
+
+
+def music_page(store, group_id, kind, value, offset=0, limit=10):
+    if kind == 'search':
+        words = normalize(value).split()
+        if not words:
+            return [], 0
+        condition = ' AND '.join('instr(searchable,?)>0' for _ in words)
+        params = words
+    elif kind == 'artist':
+        condition, params = 'artist_key=?', [value]
+    else:
+        raise ValueError('Type de recherche inconnu')
+    where = 'group_id=? AND ' + condition
+    with store.lock:
+        total = store.db.execute('SELECT count(*) FROM music WHERE ' + where, (str(group_id), *params)).fetchone()[0]
+        rows = store.db.execute('SELECT message_id,label FROM music WHERE ' + where +
+                                ' ORDER BY message_id DESC LIMIT ? OFFSET ?',
+                                (str(group_id), *params, limit, offset)).fetchall()
+    return rows, total
+
+
+def artists_page(store, group_id, offset=0, limit=10):
+    with store.lock:
+        total = store.db.execute('SELECT count(DISTINCT artist_key) FROM music WHERE group_id=?',
+                                 (str(group_id),)).fetchone()[0]
+        rows = store.db.execute("SELECT artist_key,coalesce(nullif(min(artist),''),'Artiste non renseigné'),count(*) "
+                                'FROM music WHERE group_id=? GROUP BY artist_key ORDER BY artist_key LIMIT ? OFFSET ?',
+                                (str(group_id), limit, offset)).fetchall()
+    return rows, total
+
+
+def random_music(store, group_id):
+    with store.lock:
+        return store.db.execute('SELECT message_id,label FROM music WHERE group_id=? ORDER BY random() LIMIT 1',
+                                (str(group_id),)).fetchone()

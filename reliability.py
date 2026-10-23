@@ -7,6 +7,8 @@ import threading
 import time
 import fcntl
 
+from catalogue import normalize
+
 LOG = logging.getLogger("maxxie")
 READ_METHODS = {"getMe", "getChat", "getChatMember", "getWebhookInfo", "getUpdates"}
 
@@ -48,6 +50,9 @@ class TaskStore:
             CREATE TABLE IF NOT EXISTS music (
                 group_id TEXT NOT NULL, message_id INTEGER NOT NULL, label TEXT NOT NULL,
                 searchable TEXT NOT NULL, PRIMARY KEY(group_id,message_id));
+            CREATE TABLE IF NOT EXISTS browse_sessions (
+                token TEXT PRIMARY KEY, chat_id INTEGER NOT NULL, kind TEXT NOT NULL,
+                value TEXT NOT NULL, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY, update_id INTEGER UNIQUE, kind TEXT NOT NULL,
                 payload TEXT NOT NULL, dedupe TEXT, lane INTEGER NOT NULL,
@@ -60,6 +65,17 @@ class TaskStore:
                 task_id INTEGER NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL,
                 result TEXT, code INTEGER, PRIMARY KEY(task_id, fingerprint));
         """)
+        music_columns = {row[1] for row in self.db.execute("PRAGMA table_info(music)")}
+        for column in ("artist", "artist_key"):
+            if column not in music_columns:
+                self.db.execute(f"ALTER TABLE music ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        if "artist" not in music_columns:
+            # Les anciennes versions stockaient « artiste — titre » dans label.
+            rows = self.db.execute("SELECT group_id,message_id,label FROM music WHERE instr(label,' — ')>0").fetchall()
+            self.db.executemany("UPDATE music SET artist=?,artist_key=? WHERE group_id=? AND message_id=?",
+                                [(label.split(" — ", 1)[0], normalize(label.split(" — ", 1)[0]), group_id, message_id)
+                                 for group_id, message_id, label in rows])
+        self.db.execute("CREATE INDEX IF NOT EXISTS music_artist ON music(group_id,artist_key,message_id)")
         if "request" not in {row[1] for row in self.db.execute("PRAGMA table_info(actions)")}:
             self.db.execute("ALTER TABLE actions ADD COLUMN request TEXT")
         # Une interruption entre l'envoi et son enregistrement laisse un résultat
@@ -197,6 +213,7 @@ class TaskStore:
         # Garder le diagnostic 30 jours. Les updates plus anciens restent exclus
         # par l'offset persistant, même une fois leur journal nettoyé.
         with self.lock, self.db:
+            self.db.execute("DELETE FROM browse_sessions WHERE expires<?", (time.time(),))
             self.db.execute("DELETE FROM command_limits WHERE started<?", (time.time() - 86400,))
             self.db.execute("DELETE FROM media_limits WHERE started<?", (time.time() - 86400,))
             self.db.execute("DELETE FROM actions WHERE task_id IN (SELECT id FROM tasks "

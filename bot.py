@@ -11,7 +11,8 @@ from pathlib import Path
 import time
 from datetime import datetime, timezone
 
-from catalogue import index_music, message_link, search_music
+from catalogue import (artists_page, create_session, get_session, index_music,
+                       message_link, music_page, random_music)
 from reliability import JournalAPI, READ_METHODS, TaskStore, TelegramError, Worker
 
 LOG = logging.getLogger("maxxie")
@@ -237,6 +238,8 @@ class Bot:
                  "/start — accueil, règles et lien du groupe",
                  "/recherche artiste ou titre — chercher un morceau",
                  "Exemple : /recherche Edith Piaf",
+                 "/artistes — parcourir les artistes et leurs morceaux",
+                 "/hasard — découvrir un morceau au hasard",
                  "/aide — afficher cette aide", "/id — votre identifiant Telegram", "",
                  "Le catalogue contient les morceaux enregistrés par le bot, pas tout l’historique du groupe."]
         admin = user_id == self.owner_user_id and bool(self.owner_user_id)
@@ -262,23 +265,75 @@ class Bot:
         if not isinstance(self.background, TaskStore):
             self.action("search", "sendMessage", chat_id=chat_id, text="Le catalogue est temporairement indisponible.")
             return
-        results = search_music(self.background, self.group_id, query, limit=11)
-        lines = ["Résultats de la recherche 🎵"]
-        buttons = []
-        for number, (message_id, label) in enumerate(results[:10], 1):
-            lines.append(f"{number}. {label}")
-            link = message_link(self.group_id, self.group_url, message_id)
-            if link:
-                buttons.append([{"text": f"{number}. {label[:55]}", "url": link}])
-        if not results:
-            lines = ["Aucun morceau trouvé dans le catalogue.",
-                     "Essayez un autre titre ou artiste. Les anciens morceaux doivent être ajoutés au catalogue par un administrateur."]
-        elif len(results) > 10:
-            lines.append("D’autres résultats existent : précisez l’artiste ou le titre pour affiner la recherche.")
+        token = create_session(self.background, chat_id, "search", query)
+        self.show_browse(chat_id, token)
+
+    def show_artists(self, chat_id):
+        if not isinstance(self.background, TaskStore):
+            self.action("artists", "sendMessage", chat_id=chat_id, text="Le catalogue est temporairement indisponible.")
+            return
+        token = create_session(self.background, chat_id, "artists")
+        self.show_browse(chat_id, token)
+
+    def show_browse(self, chat_id, token, offset=0):
+        session = get_session(self.background, chat_id, token) if isinstance(self.background, TaskStore) else None
+        if session is None:
+            self.action("browse-expired", "sendMessage", chat_id=chat_id,
+                        text="Cette navigation a expiré. Relancez /recherche ou /artistes.")
+            return
+        kind, value = session
+        def page(start):
+            return (artists_page(self.background, self.group_id, start) if kind == "artists" else
+                    music_page(self.background, self.group_id, kind, value, start))
+        rows, total = page(offset)
+        if total and offset >= total:
+            offset = ((total - 1) // 10) * 10
+            rows, total = page(offset)
+        title = {"artists": "Artistes du catalogue 🎵", "artist": "Morceaux de cet artiste 🎵",
+                 "search": "Résultats de la recherche 🎵"}[kind]
+        lines, buttons = [title], []
+        if total:
+            lines.append(f"Page {offset // 10 + 1}/{(total + 9) // 10} — {total} résultat(s)")
+        for number, row in enumerate(rows, offset + 1):
+            if kind == "artists":
+                artist_key, label, count = row
+                lines.append(f"{number}. {label[:120]} ({count})")
+                artist_token = create_session(self.background, chat_id, "artist", artist_key)
+                buttons.append([{"text": f"{label[:50]} ({count})", "callback_data": f"browse:{artist_token}:0"}])
+            else:
+                message_id, label = row
+                lines.append(f"{number}. {label[:150]}")
+                link = message_link(self.group_id, self.group_url, message_id)
+                if link:
+                    buttons.append([{"text": f"{number}. {label[:55]}", "url": link}])
+        if not rows:
+            lines.append("Aucun artiste enregistré." if kind == "artists" else
+                         "Aucun morceau trouvé dans le catalogue. Essayez un autre titre ou artiste.")
+        navigation = []
+        if offset:
+            navigation.append({"text": "◀️ Précédent", "callback_data": f"browse:{token}:{max(0, offset - 10)}"})
+        if offset + 10 < total:
+            navigation.append({"text": "Suivant ▶️", "callback_data": f"browse:{token}:{offset + 10}"})
+        if navigation:
+            buttons.append(navigation)
         params = {"chat_id": chat_id, "text": "\n".join(lines)}
         if buttons:
             params["reply_markup"] = {"inline_keyboard": buttons}
-        self.action("search", "sendMessage", **params)
+        self.action("search" if kind == "search" else "browse", "sendMessage", **params)
+
+    def show_random(self, chat_id):
+        song = random_music(self.background, self.group_id) if isinstance(self.background, TaskStore) else None
+        params = {"chat_id": chat_id, "text": "Aucun morceau disponible dans le catalogue pour le moment."}
+        if song:
+            message_id, label = song
+            params["text"] = f"À découvrir au hasard 🎲\n\n{label}"
+            buttons = []
+            link = message_link(self.group_id, self.group_url, message_id)
+            if link:
+                buttons.append([{"text": "Écouter dans le groupe 🎵", "url": link}])
+            buttons.append([{"text": "Encore au hasard 🎲", "callback_data": "random"}])
+            params["reply_markup"] = {"inline_keyboard": buttons}
+        self.action("random", "sendMessage", **params)
 
     def index_published(self, message, copied):
         if (isinstance(self.background, TaskStore) and isinstance(copied, dict)
@@ -345,8 +400,18 @@ class Bot:
             except TelegramError as error:
                 LOG.info("Acquittement du bouton indisponible (code %s), réponse conservée.", error.code)
             chat = callback.get("message", {}).get("chat", {})
-            if callback.get("data") == "rules" and chat.get("type") == "private":
-                self.show_rules(chat["id"])
+            data = callback.get("data", "")
+            if chat.get("type") == "private" and callback.get("from", {}).get("id", chat["id"]) == chat["id"]:
+                if data == "rules":
+                    self.show_rules(chat["id"])
+                elif data == "random":
+                    self.show_random(chat["id"])
+                elif data.startswith("browse:"):
+                    parts = data.split(":")
+                    if (len(parts) == 3 and len(parts[1]) == 16 and
+                            all(char in "0123456789abcdef" for char in parts[1]) and
+                            parts[2].isdigit() and len(parts[2]) <= 7 and int(parts[2]) <= 1000000):
+                        self.show_browse(chat["id"], parts[1], int(parts[2]))
             return
         membership = update.get("chat_member")
         if membership:
@@ -371,6 +436,12 @@ class Bot:
                 return
             if command in ("/recherche", f"/recherche@{self.username.lower()}"):
                 self.find_music(chat["id"], parts[1] if len(parts) > 1 else "")
+                return
+            if command in ("/artistes", f"/artistes@{self.username.lower()}"):
+                self.show_artists(chat["id"])
+                return
+            if command in ("/hasard", f"/hasard@{self.username.lower()}"):
+                self.show_random(chat["id"])
                 return
             start = command in ("/start", f"/start@{self.username.lower()}")
             if "audio" in message or "document" in message:

@@ -81,9 +81,10 @@ class CatalogueTests(unittest.TestCase):
         params = self.raw.call.call_args.kwargs
         self.assertEqual(params['chat_id'], 7)
         buttons = params['reply_markup']['inline_keyboard']
-        self.assertEqual(len(buttons), 10)
+        self.assertEqual(len([row for row in buttons if "url" in row[0]]), 10)
         self.assertEqual(buttons[0][0]['url'], 'https://t.me/Maxxie_432Hz/111')
-        self.assertIn('affiner', params['text'])
+        self.assertIn('Page 1/2', params['text'])
+        self.assertEqual(buttons[-1][0]['text'], 'Suivant ▶️')
         self.assertLess(len(params['text']), 4096)
 
     def test_empty_query_empty_catalogue_and_long_query_are_explained(self):
