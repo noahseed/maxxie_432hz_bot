@@ -109,6 +109,18 @@ Les MP3 publiés par l’intermédiaire du bot et ceux reçus directement dans l
 
 Le bot doit être administrateur pour recevoir les publications ordinaires du groupe avec le mode confidentialité activé. Les publications d’autres bots peuvent ne pas lui être transmises. Les suppressions ordinaires de messages ne sont pas notifiées au bot : un résultat peut donc pointer vers un message supprimé. Pour les groupes privés, les liens nécessitent d’être membre. Voir la [FAQ Telegram](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get) et les [liens vers les messages](https://core.telegram.org/api/links#message-links).
 
+### Import d’un export Telegram Desktop
+
+`import_catalogue.py` permet d’ajouter en une transaction les MP3 d’un export JSON de supergroupe. Il vérifie la correspondance entre l’identifiant du groupe exporté et `GROUP_ID`, ignore les messages non musicaux et conserve les métadonnées des entrées déjà indexées. Il ne republie aucun message, n’ouvre pas la file de tâches du bot et ne télécharge pas les fichiers audio.
+
+Après une sauvegarde, exécuter avec le compte du service et un export placé dans un dossier privé :
+
+```bash
+sudo -u maxxie-bot python3 /opt/maxxie-bot/import_catalogue.py /CHEMIN/export.json --database /var/lib/maxxie-bot/tasks.sqlite3 --group-id=-100IDENTIFIANT
+```
+
+Remplacer le chemin et l’identifiant par les valeurs réelles. Le bilan indique le nombre de MP3, les ajouts, les entrées déjà présentes et le total. Une erreur annule les ajouts de la transaction. Supprimer la copie temporaire de l’export après vérification ; ne jamais versionner l’historique privé dans Git.
+
 ## Notifications de nouveaux visiteurs
 
 Configurer `NOTIFY_CHAT_ID` avec l'identifiant numérique du destinataire privé, puis redémarrer le service. Le destinataire doit avoir démarré le bot et ne pas l'avoir bloqué. À son premier `/start` privé (y compris un lien `/start rules`), chaque utilisateur déclenche une notification contenant son nom affiché, son @pseudo éventuel et son identifiant Telegram. Les messages ordinaires et les commandes du groupe ne déclenchent aucune notification.
