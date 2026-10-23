@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 from datetime import datetime, timezone
 
+from catalogue import index_music, message_link, search_music
 from reliability import JournalAPI, READ_METHODS, TaskStore, TelegramError, Worker
 
 LOG = logging.getLogger("maxxie")
@@ -231,6 +232,59 @@ class Bot:
     def show_rules(self, chat_id):
         self.action(f"rules:{chat_id}", "sendMessage", chat_id=chat_id, text=self.rules)
 
+    def show_help(self, chat_id, user_id):
+        lines = ["Aide — Maxxie 432Hz 🎵", "",
+                 "/start — accueil, règles et lien du groupe",
+                 "/recherche artiste ou titre — chercher un morceau",
+                 "Exemple : /recherche Edith Piaf",
+                 "/aide — afficher cette aide", "/id — votre identifiant Telegram", "",
+                 "Le catalogue contient les morceaux enregistrés par le bot, pas tout l’historique du groupe."]
+        admin = user_id == self.owner_user_id and bool(self.owner_user_id)
+        if user_id and not admin:
+            try:
+                admin = self.api.call("getChatMember", chat_id=self.group_id, user_id=user_id).get("status") in ("creator", "administrator")
+            except TelegramError as error:
+                if error.code not in (400, 403):
+                    raise
+        if admin:
+            lines.extend(["", "Administrateurs : envoyez un MP3 en privé pour le publier.",
+                          "Pour cataloguer un ancien MP3 : répondez à son message dans le groupe avec /indexer."])
+        if user_id == self.owner_user_id and self.owner_user_id:
+            lines.append("/statut — état du bot et des sauvegardes (propriétaire uniquement)")
+        self.action("help", "sendMessage", chat_id=chat_id, text="\n".join(lines))
+
+    def find_music(self, chat_id, query):
+        query = query.strip()
+        if not 2 <= len(query) <= 120:
+            text = "Pour chercher un morceau : /recherche artiste ou titre\nExemple : /recherche Edith Piaf\nUtilisez entre 2 et 120 caractères."
+            self.action("search", "sendMessage", chat_id=chat_id, text=text)
+            return
+        if not isinstance(self.background, TaskStore):
+            self.action("search", "sendMessage", chat_id=chat_id, text="Le catalogue est temporairement indisponible.")
+            return
+        results = search_music(self.background, self.group_id, query, limit=11)
+        lines = ["Résultats de la recherche 🎵"]
+        buttons = []
+        for number, (message_id, label) in enumerate(results[:10], 1):
+            lines.append(f"{number}. {label}")
+            link = message_link(self.group_id, self.group_url, message_id)
+            if link:
+                buttons.append([{"text": f"{number}. {label[:55]}", "url": link}])
+        if not results:
+            lines = ["Aucun morceau trouvé dans le catalogue.",
+                     "Essayez un autre titre ou artiste. Les anciens morceaux doivent être ajoutés au catalogue par un administrateur."]
+        elif len(results) > 10:
+            lines.append("D’autres résultats existent : précisez l’artiste ou le titre pour affiner la recherche.")
+        params = {"chat_id": chat_id, "text": "\n".join(lines)}
+        if buttons:
+            params["reply_markup"] = {"inline_keyboard": buttons}
+        self.action("search", "sendMessage", **params)
+
+    def index_published(self, message, copied):
+        if (isinstance(self.background, TaskStore) and isinstance(copied, dict)
+                and isinstance(copied.get("message_id"), int)):
+            index_music(self.background, self.group_id, message, copied.get("message_id"))
+
     def publish_mp3(self, message):
         chat_id = message["chat"]["id"]
         user = message.get("from", {})
@@ -240,6 +294,9 @@ class Bot:
         if isinstance(self.api, JournalAPI) and self.api.completed(
                 "mp3-copy", "copyMessage", chat_id=self.group_id,
                 from_chat_id=chat_id, message_id=message["message_id"]):
+            copied = self.action("mp3-copy", "copyMessage", chat_id=self.group_id,
+                                 from_chat_id=chat_id, message_id=message["message_id"])
+            self.index_published(message, copied)
             self.confirm_mp3(chat_id)
             return
         # Vérifier le statut réel, sans promouvoir un compte pour cet envoi.
@@ -257,7 +314,7 @@ class Bot:
         try:
             # Copier le message conserve fichier, légende et métadonnées,
             # sans téléchargement sur le VPS ni mention de transfert.
-            self.action("mp3-copy", "copyMessage", chat_id=self.group_id,
+            copied = self.action("mp3-copy", "copyMessage", chat_id=self.group_id,
                           from_chat_id=chat_id, message_id=message["message_id"])
         except TelegramError as error:
             if error.code not in (400, 403):
@@ -265,6 +322,7 @@ class Bot:
             self.action("mp3-error", "sendMessage", chat_id=chat_id,
                           text="Le MP3 n'a pas pu être publié. Vérifiez que le bot peut publier dans le groupe.")
             return
+        self.index_published(message, copied)
         self.confirm_mp3(chat_id)
 
     def confirm_mp3(self, chat_id):
@@ -295,14 +353,24 @@ class Bot:
             if str(membership.get("chat", {}).get("id")) == self.group_id:
                 self.later(self.promote_known, membership["new_chat_member"]["user"])
             return
-        message = update.get("message", {})
+        message = update.get("message") or update.get("edited_message", {})
         chat = message.get("chat", {})
+        if "edited_message" in update:
+            if str(chat.get("id")) == self.group_id and isinstance(self.background, TaskStore):
+                index_music(self.background, self.group_id, message)
+            return
         if chat.get("type") == "private":
             user = message.get("from", {})
             parts = message.get("text", "").split(maxsplit=1)
             command = parts[0].lower() if parts else ""
             if command in ("/statut", f"/statut@{self.username.lower()}"):
                 self.show_status(chat["id"], user.get("id"))
+                return
+            if command in ("/aide", f"/aide@{self.username.lower()}"):
+                self.show_help(chat["id"], user.get("id"))
+                return
+            if command in ("/recherche", f"/recherche@{self.username.lower()}"):
+                self.find_music(chat["id"], parts[1] if len(parts) > 1 else "")
                 return
             start = command in ("/start", f"/start@{self.username.lower()}")
             if "audio" in message or "document" in message:
@@ -322,6 +390,24 @@ class Bot:
                 self.later(self.notify_new_visitor, user)
                 self.later(self.promote_known, user)
         elif str(chat.get("id")) == self.group_id:
+            if isinstance(self.background, TaskStore):
+                index_music(self.background, self.group_id, message)
+            command = message.get("text", "").split(maxsplit=1)
+            if command and command[0].lower() in ("/indexer", f"/indexer@{self.username.lower()}"):
+                user_id = message.get("from", {}).get("id")
+                if user_id:
+                    member = self.api.call("getChatMember", chat_id=self.group_id, user_id=user_id)
+                    if member.get("status") in ("creator", "administrator"):
+                        added = isinstance(self.background, TaskStore) and index_music(
+                            self.background, self.group_id, message.get("reply_to_message", {}))
+                        try:
+                            self.action("index-confirmation", "sendMessage", chat_id=user_id,
+                                        text="Morceau ajouté au catalogue ✅" if added else
+                                             "Répondez au message d’un MP3 dans le groupe avec /indexer.")
+                        except TelegramError as error:
+                            if error.code not in (400, 403):
+                                raise
+                return
             members = [u for u in message.get("new_chat_members", []) if not u.get("is_bot")]
             for user in members:
                 self.later(self.promote_known, user)
@@ -425,7 +511,7 @@ def main():
                     stop.wait(1)  # Ralentir la réception sans abandonner de tâche.
                     continue
                 updates = api.call("getUpdates", offset=store.offset(), timeout=30, limit=50,
-                                   allowed_updates=["message", "chat_member", "callback_query"])
+                                   allowed_updates=["message", "edited_message", "chat_member", "callback_query"])
                 store.ingest(updates)
                 if time.monotonic() - last_cleanup > 3600:
                     store.cleanup()

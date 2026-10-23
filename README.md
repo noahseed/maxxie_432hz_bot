@@ -4,7 +4,7 @@ Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
 
 ## Fonctionnement
 
-- La commande privée `/start` affiche l'accueil avec deux boutons : « Lire les règles du groupe » et « Rejoindre le groupe ». Le premier affiche le règlement en privé ; le second ouvre le lien du groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
+- La commande privée `/start` affiche l'accueil avec deux boutons : « Lire les règles du groupe » et « Rejoindre le groupe ». Le premier affiche le règlement en privé ; le second ouvre le lien du groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
 - L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les deux boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
 - Le règlement reste en privé. Les messages ordinaires du groupe sont ignorés.
 - Le lien du groupe est accessible à toute personne contactant le bot. Il ne s'agit pas d'un contrôle d'admission ni d'une obligation d'accepter les règles.
@@ -48,7 +48,7 @@ Les commandes `sudo` suivantes sont à exécuter sur le VPS. Copier d'abord le p
 
 ```bash
 ssh UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr 'mkdir -p ~/maxxie-bot'
-scp bot.py reliability.py backups.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
+scp bot.py reliability.py catalogue.py backups.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 scp deploy/maxxie-bot.service deploy/maxxie-backup.service deploy/maxxie-backup.timer deploy/configure.py UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 ```
 
@@ -59,7 +59,7 @@ sudo apt-get update
 sudo apt-get install -y python3 ca-certificates
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin maxxie-bot
 sudo install -d -m 755 /opt/maxxie-bot
-sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/backups.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
+sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/catalogue.py ~/maxxie-bot/backups.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
 sudo install -m 644 ~/maxxie-bot/configure.py /opt/maxxie-bot/
 sudo install -m 600 ~/maxxie-bot/.env.example /etc/maxxie-bot.env
 sudo nano /etc/maxxie-bot.env
@@ -96,6 +96,18 @@ Après modification de la liste, redémarrer le service. La promotion se déclen
 Un administrateur (ou le propriétaire) du groupe peut envoyer un MP3 en privé au bot : celui-ci copie le message dans le groupe, avec sa légende, puis confirme la publication en privé. Le statut d'administrateur est vérifié auprès de Telegram à chaque envoi ; la liste de promotion automatique ne suffit pas à autoriser une publication.
 
 Les MP3 sont acceptés comme audio ou document, selon leur extension `.mp3` (ou leur type `audio/mpeg` si aucun nom n'est fourni). Le fichier n'est ni téléchargé sur le VPS ni converti. Un MP3 envoyé comme document reste un document. Les autres fichiers audio sont refusés. Le bot doit pouvoir publier dans le groupe.
+
+## Recherche musicale et aide
+
+En privé, `/aide` présente les commandes disponibles : `/start`, `/recherche artiste ou titre`, `/aide` et `/id`. L’aide des administrateurs réels du groupe précise comment publier et indexer ; celle du propriétaire affiche également `/statut`. Les commandes peuvent être adressées au bot (`/aide@Maxxie_432Hz_Bot`). Les commandes inconnues, notamment `/status`, restent silencieuses.
+
+Exemples : `/recherche Edith Piaf`, `/recherche vie en rose`. La recherche ignore accents et majuscules et exige la présence de tous les mots, dans n’importe quel ordre, dans le titre, l’artiste, le nom du fichier ou la légende. Elle affiche jusqu’à dix résultats avec des boutons vers les messages du groupe ; préciser la recherche si davantage de morceaux correspondent. Les recherches restent en privé et ne sont pas conservées dans le catalogue.
+
+Les MP3 publiés par l’intermédiaire du bot et ceux reçus directement dans le groupe configuré sont automatiquement indexés. Les modifications reçues des messages du groupe mettent à jour leur entrée. Le catalogue ne contient ni fichiers audio, ni profils de visiteurs : il est conservé dans la table `music` de `STATE_DB`, couverte par les sauvegardes existantes et conservée indépendamment du nettoyage des tâches.
+
+**Anciens morceaux :** le Bot API ne permet pas de parcourir tout l’historique. Un administrateur peut répondre à un ancien message MP3, **dans le groupe**, avec `/indexer`. Le bot vérifie les droits actuels et confirme uniquement en privé si l’administrateur a démarré le bot. Répéter l’indexation met à jour la même entrée sans doublon et ne republie pas le fichier. Sans catalogue ou sans correspondance, le bot l’indique explicitement.
+
+Le bot doit être administrateur pour recevoir les publications ordinaires du groupe avec le mode confidentialité activé. Les publications d’autres bots peuvent ne pas lui être transmises. Les suppressions ordinaires de messages ne sont pas notifiées au bot : un résultat peut donc pointer vers un message supprimé. Pour les groupes privés, les liens nécessitent d’être membre. Voir la [FAQ Telegram](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get) et les [liens vers les messages](https://core.telegram.org/api/links#message-links).
 
 ## Notifications de nouveaux visiteurs
 

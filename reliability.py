@@ -45,6 +45,9 @@ class TaskStore:
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value INTEGER);
             CREATE TABLE IF NOT EXISTS command_limits (user_id INTEGER PRIMARY KEY, started REAL, count INTEGER);
             CREATE TABLE IF NOT EXISTS media_limits (user_id INTEGER PRIMARY KEY, started REAL, count INTEGER);
+            CREATE TABLE IF NOT EXISTS music (
+                group_id TEXT NOT NULL, message_id INTEGER NOT NULL, label TEXT NOT NULL,
+                searchable TEXT NOT NULL, PRIMARY KEY(group_id,message_id));
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY, update_id INTEGER UNIQUE, kind TEXT NOT NULL,
                 payload TEXT NOT NULL, dedupe TEXT, lane INTEGER NOT NULL,
