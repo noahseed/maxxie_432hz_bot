@@ -228,6 +228,8 @@ class Bot:
                       reply_markup={"inline_keyboard": [
                           [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}],
                           [{"text": "Rejoindre le groupe 🎵", "url": self.group_url}],
+                          [{"text": "Artistes", "callback_data": "artists"},
+                           {"text": "Hasard", "callback_data": "random"}],
                           [{"text": "Aide ❓", "callback_data": "help"}]
                       ]})
 
@@ -407,6 +409,8 @@ class Bot:
                     self.show_rules(chat["id"])
                 elif data == "help":
                     self.show_help(chat["id"], callback.get("from", {}).get("id", chat["id"]))
+                elif data == "artists":
+                    self.show_artists(chat["id"])
                 elif data == "random":
                     self.show_random(chat["id"])
                 elif data.startswith("browse:"):

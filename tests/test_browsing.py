@@ -70,6 +70,21 @@ class BrowsingTests(unittest.TestCase):
         self.assertEqual(urls, {'https://t.me/Maxxie_432Hz/1', 'https://t.me/Maxxie_432Hz/2'})
         self.assertNotIn('Tribute', params['text'])
 
+    def test_welcome_catalogue_buttons_open_existing_features_privately(self):
+        index_music(self.store, '-10042', self.song(1))
+        self.click('artists')
+        self.assertIn('Artistes du catalogue', self.result()['text'])
+        self.click('random')
+        self.assertEqual(self.result()['reply_markup']['inline_keyboard'][0][0]['url'],
+                         'https://t.me/Maxxie_432Hz/1')
+        for callback in ('artists', 'random'):
+            self.raw.reset_mock()
+            self.click(callback, uid=-10042, chat_type='supergroup')
+            self.raw.call.assert_called_once_with('answerCallbackQuery', callback_query_id='click')
+            self.raw.reset_mock()
+            self.click(callback, sender=8)
+            self.raw.call.assert_called_once_with('answerCallbackQuery', callback_query_id='click')
+
     def test_artist_list_is_paginated(self):
         for mid in range(1, 13):
             index_music(self.store, '-10042', self.song(mid, f'Artiste {mid:02}'))

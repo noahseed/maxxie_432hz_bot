@@ -69,16 +69,19 @@ class WelcomeTests(unittest.TestCase):
         self.api = Mock()
         self.bot = Bot(self.api, "MaxxieBot", "-10042", "https://t.me/Maxxie_432Hz", "Règlement")
 
-    def test_private_start_gets_three_buttons_without_rules(self):
+    def test_private_start_gets_five_buttons_with_artists_and_random_side_by_side(self):
         self.bot.handle({"message": {"chat": {"id": 7, "type": "private"}, "text": "/start"}})
         args = self.api.call.call_args.kwargs
         self.assertNotIn("Règlement", args["text"])
         self.assertEqual(args["chat_id"], 7)
         keyboard = args["reply_markup"]["inline_keyboard"]
-        self.assertEqual(sum(len(row) for row in keyboard), 3)
+        self.assertEqual(sum(len(row) for row in keyboard), 5)
         self.assertEqual(keyboard[0][0]["callback_data"], "rules")
-        self.assertEqual(keyboard[2][0]["callback_data"], "help")
+        self.assertEqual(keyboard[3][0]["callback_data"], "help")
         self.assertEqual(keyboard[1][0]["url"], "https://t.me/Maxxie_432Hz")
+        self.assertEqual([button["text"] for button in keyboard[2]], ["Artistes", "Hasard"])
+        self.assertEqual([button["callback_data"] for button in keyboard[2]], ["artists", "random"])
+        self.assertEqual([len(row) for row in keyboard], [1, 1, 2, 1])
 
     def test_unknown_commands_and_other_private_messages_are_silent(self):
         for body in ({"text": "/inconnue"}, {"text": "/status"},
