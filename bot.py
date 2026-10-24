@@ -226,7 +226,8 @@ class Bot:
         self.action(f"welcome:{chat_id}", "sendMessage", chat_id=chat_id,
                       text=self.welcome,
                       reply_markup={"inline_keyboard": [
-                          [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}], [
+                          [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}],
+                          [{"text": "Aide ❓", "callback_data": "help"}], [
                           {"text": "Rejoindre le groupe 🎵", "url": self.group_url}
                       ]]})
 
@@ -404,6 +405,8 @@ class Bot:
             if chat.get("type") == "private" and callback.get("from", {}).get("id", chat["id"]) == chat["id"]:
                 if data == "rules":
                     self.show_rules(chat["id"])
+                elif data == "help":
+                    self.show_help(chat["id"], callback.get("from", {}).get("id", chat["id"]))
                 elif data == "random":
                     self.show_random(chat["id"])
                 elif data.startswith("browse:"):

@@ -4,8 +4,8 @@ Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
 
 ## Fonctionnement
 
-- La commande privée `/start` affiche l'accueil avec deux boutons : « Lire les règles du groupe » et « Rejoindre le groupe ». Le premier affiche le règlement en privé ; le second ouvre le lien du groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
-- L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les deux boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
+- La commande privée `/start` affiche l'accueil avec trois boutons dans cet ordre : « Lire les règles du groupe », « Aide » et « Rejoindre le groupe ». Ils affichent le règlement, ouvrent l’aide adaptée au rôle de l’utilisateur et donnent accès au groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
+- L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les trois boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
 - Le règlement reste en privé. Les messages ordinaires du groupe sont ignorés.
 - Le lien du groupe est accessible à toute personne contactant le bot. Il ne s'agit pas d'un contrôle d'admission ni d'une obligation d'accepter les règles.
 
@@ -151,7 +151,7 @@ Au démarrage, une panne réseau ou Telegram entraîne une nouvelle tentative av
 
 ## Stockage, accueil et diagnostic
 
-`WELCOME_FILE` pointe vers `welcome.txt`, qui contient le texte du menu d'accueil. Modifier ce fichier puis redémarrer le service ; les deux boutons sont conservés. Ne pas écraser un fichier personnalisé lors d'une mise à jour.
+`WELCOME_FILE` pointe vers `welcome.txt`, qui contient le texte du menu d'accueil. Modifier ce fichier puis redémarrer le service ; les trois boutons sont conservés. Ne pas écraser un fichier personnalisé lors d'une mise à jour.
 
 Les événements en attente peuvent contenir le texte privé, le nom affiché, le pseudonyme et les références des fichiers Telegram. Les MP3 eux-mêmes ne sont jamais téléchargés. Le dossier `/var/lib/maxxie-bot` est réservé au compte du service ; les fichiers SQLite ne sont pas versionnés dans Git. Les données des tâches terminées ou abandonnées sont effacées, puis leurs métadonnées et empreintes d'actions sont nettoyées après 30 jours. Une tâche en attente peut conserver ses données pendant une longue indisponibilité. Sauvegarder les bases avec l'API de sauvegarde SQLite ou après arrêt du service, en tenant compte des fichiers WAL ; ne pas copier seulement le fichier principal pendant son utilisation.
 
@@ -229,6 +229,6 @@ python3 -m unittest discover -s tests -v
 
 GitHub Actions exécute automatiquement ces tests sur Python 3.11 et 3.13 à chaque push et pull request. Les tests simulent les erreurs 429, coupures réseau, interruptions pendant les envois, redémarrages et une file de plus de 128 tâches, sans contacter Telegram.
 
-Après installation : contacter le bot en privé, vérifier les deux boutons ; faire rejoindre ce compte au groupe et vérifier la réception de l'accueil en privé, sans publication du bot dans le groupe. Un membre n'ayant jamais ouvert le bot ou l'ayant bloqué ne doit pas recevoir d'accueil. Vérifier aussi que le bot reste silencieux pendant une conversation ordinaire.
+Après installation : contacter le bot en privé, vérifier les trois boutons ; faire rejoindre ce compte au groupe et vérifier la réception de l'accueil en privé, sans publication du bot dans le groupe. Un membre n'ayant jamais ouvert le bot ou l'ayant bloqué ne doit pas recevoir d'accueil. Vérifier aussi que le bot reste silencieux pendant une conversation ordinaire.
 
 Les sauvegardes du VPS sont verrouillées pendant la création, la rotation et le chiffrement pour éviter les exécutions simultanées. La copie sur l’ordinateur refuse une archive de plus de 36 heures (ou datée de plus de cinq minutes dans le futur) ; le service signale alors un échec sans remplacer les copies locales existantes.

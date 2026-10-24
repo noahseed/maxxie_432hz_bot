@@ -69,15 +69,16 @@ class WelcomeTests(unittest.TestCase):
         self.api = Mock()
         self.bot = Bot(self.api, "MaxxieBot", "-10042", "https://t.me/Maxxie_432Hz", "Règlement")
 
-    def test_private_start_gets_two_buttons_without_rules(self):
+    def test_private_start_gets_three_buttons_without_rules(self):
         self.bot.handle({"message": {"chat": {"id": 7, "type": "private"}, "text": "/start"}})
         args = self.api.call.call_args.kwargs
         self.assertNotIn("Règlement", args["text"])
         self.assertEqual(args["chat_id"], 7)
         keyboard = args["reply_markup"]["inline_keyboard"]
-        self.assertEqual(sum(len(row) for row in keyboard), 2)
+        self.assertEqual(sum(len(row) for row in keyboard), 3)
         self.assertEqual(keyboard[0][0]["callback_data"], "rules")
-        self.assertEqual(keyboard[1][0]["url"], "https://t.me/Maxxie_432Hz")
+        self.assertEqual(keyboard[1][0]["callback_data"], "help")
+        self.assertEqual(keyboard[2][0]["url"], "https://t.me/Maxxie_432Hz")
 
     def test_unknown_commands_and_other_private_messages_are_silent(self):
         for body in ({"text": "/inconnue"}, {"text": "/status"},
@@ -91,6 +92,18 @@ class WelcomeTests(unittest.TestCase):
                 self.bot.handle({"message": {"chat": {"id": 7, "type": "private"},
                                               "from": {"id": 7}, **body}})
                 self.api.call.assert_not_called()
+
+    def test_help_button_uses_private_role_aware_help(self):
+        self.api.call.return_value = {"status": "member"}
+        self.bot.handle({"callback_query": {"id": "help-click", "data": "help", "from": {"id": 7},
+                        "message": {"chat": {"id": 7, "type": "private"}}}})
+        self.assertEqual(self.api.call.call_args.kwargs["chat_id"], 7)
+        self.assertIn("/recherche", self.api.call.call_args.kwargs["text"])
+        self.assertNotIn("/statut", self.api.call.call_args.kwargs["text"])
+        self.api.reset_mock()
+        self.bot.handle({"callback_query": {"id": "help-group", "data": "help", "from": {"id": 7},
+                        "message": {"chat": {"id": -10042, "type": "supergroup"}}}})
+        self.api.call.assert_called_once_with("answerCallbackQuery", callback_query_id="help-group")
 
     def test_rules_button_displays_rules_in_private(self):
         self.bot.handle({"callback_query": {"id": "abc", "data": "rules",
