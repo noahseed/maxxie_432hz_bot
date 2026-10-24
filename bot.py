@@ -227,9 +227,9 @@ class Bot:
                       text=self.welcome,
                       reply_markup={"inline_keyboard": [
                           [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}],
-                          [{"text": "Aide ❓", "callback_data": "help"}], [
-                          {"text": "Rejoindre le groupe 🎵", "url": self.group_url}
-                      ]]})
+                          [{"text": "Rejoindre le groupe 🎵", "url": self.group_url}],
+                          [{"text": "Aide ❓", "callback_data": "help"}]
+                      ]})
 
     def show_rules(self, chat_id):
         self.action(f"rules:{chat_id}", "sendMessage", chat_id=chat_id, text=self.rules)

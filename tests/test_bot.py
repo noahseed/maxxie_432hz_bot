@@ -77,8 +77,8 @@ class WelcomeTests(unittest.TestCase):
         keyboard = args["reply_markup"]["inline_keyboard"]
         self.assertEqual(sum(len(row) for row in keyboard), 3)
         self.assertEqual(keyboard[0][0]["callback_data"], "rules")
-        self.assertEqual(keyboard[1][0]["callback_data"], "help")
-        self.assertEqual(keyboard[2][0]["url"], "https://t.me/Maxxie_432Hz")
+        self.assertEqual(keyboard[2][0]["callback_data"], "help")
+        self.assertEqual(keyboard[1][0]["url"], "https://t.me/Maxxie_432Hz")
 
     def test_unknown_commands_and_other_private_messages_are_silent(self):
         for body in ({"text": "/inconnue"}, {"text": "/status"},

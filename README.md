@@ -4,7 +4,7 @@ Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
 
 ## Fonctionnement
 
-- La commande privée `/start` affiche l'accueil avec trois boutons dans cet ordre : « Lire les règles du groupe », « Aide » et « Rejoindre le groupe ». Ils affichent le règlement, ouvrent l’aide adaptée au rôle de l’utilisateur et donnent accès au groupe. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
+- La commande privée `/start` affiche l'accueil avec trois boutons dans cet ordre : « Lire les règles du groupe », « Rejoindre le groupe » et « Aide ». Ils affichent le règlement, donnent accès au groupe et ouvrent l’aide adaptée au rôle de l’utilisateur. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
 - L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les trois boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
 - Le règlement reste en privé. Les messages ordinaires du groupe sont ignorés.
 - Le lien du groupe est accessible à toute personne contactant le bot. Il ne s'agit pas d'un contrôle d'admission ni d'une obligation d'accepter les règles.
