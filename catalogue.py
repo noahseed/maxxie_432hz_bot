@@ -1,4 +1,5 @@
 """Catalogue des MP3 du groupe, conservé dans la base SQLite des tâches."""
+import json
 import re
 import secrets
 import time
@@ -33,6 +34,35 @@ def artist_metadata(message):
     return artist, normalize(artist)
 
 
+def track_identity(artist, title):
+    title = re.sub(r'[\[(]\s*432\s*hz\s*[\])]', '', title, flags=re.IGNORECASE)
+    artist, title = normalize(artist), normalize(title)
+    return json.dumps([artist, title], ensure_ascii=False) if artist and title else ''
+
+
+def duplicate_metadata(message):
+    media = message.get('audio') or message.get('document') or {}
+    return (media.get('file_unique_id', '')[:200],
+            track_identity(media.get('performer', ''), media.get('title', '')),
+            normalize(media.get('file_name', '')[:300]))
+
+
+def find_duplicates(store, group_id, message, exclude_id=0):
+    if music_metadata(message) is None:
+        return [], ''
+    keys = duplicate_metadata(message)
+    for column, value, reason in zip(('file_unique_id', 'track_key', 'file_name_key'), keys,
+                                    ('Même fichier Telegram', 'Même artiste et même titre', 'Même nom de fichier')):
+        if value:
+            with store.lock:
+                rows = store.db.execute('SELECT message_id,label FROM music WHERE group_id=? AND message_id<>? AND ' +
+                                        column + '=? ORDER BY message_id DESC LIMIT 3',
+                                        (str(group_id), exclude_id, value)).fetchall()
+            if rows:
+                return rows, reason
+    return [], ''
+
+
 def message_link(group_id, group_url, message_id):
     parsed = urlsplit(group_url)
     username = parsed.path.strip('/')
@@ -54,10 +84,11 @@ def index_music(store, group_id, message, message_id=None):
             store.db.execute('DELETE FROM music WHERE group_id=? AND message_id=?', (str(group_id), message_id))
         return False
     with store.lock, store.db:
-        store.db.execute('INSERT INTO music(group_id,message_id,label,searchable,artist,artist_key) VALUES (?,?,?,?,?,?) '
+        store.db.execute('INSERT INTO music(group_id,message_id,label,searchable,artist,artist_key,file_unique_id,track_key,file_name_key) VALUES (?,?,?,?,?,?,?,?,?) '
                          'ON CONFLICT(group_id,message_id) DO UPDATE SET label=excluded.label,searchable=excluded.searchable,'
-                         'artist=excluded.artist,artist_key=excluded.artist_key',
-                         (str(group_id), message_id, *metadata, *artist_metadata(message)))
+                         'artist=excluded.artist,artist_key=excluded.artist_key,file_unique_id=excluded.file_unique_id,'
+                         'track_key=excluded.track_key,file_name_key=excluded.file_name_key',
+                         (str(group_id), message_id, *metadata, *artist_metadata(message), *duplicate_metadata(message)))
     return True
 
 

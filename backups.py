@@ -59,6 +59,8 @@ def restore(snapshot, destination):
                 db.execute("UPDATE actions SET status='uncertain' WHERE status IN ('pending','sending')")
                 if "request" in {row[1] for row in db.execute("PRAGMA table_info(actions)")}:
                     db.execute("UPDATE actions SET request=NULL")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='duplicate_publications'").fetchone():
+                db.execute("DELETE FROM duplicate_publications")
         # Réserver sans écraser une destination créée pendant les contrôles.
         destination.mkdir(mode=0o700, exist_ok=False)
         try:

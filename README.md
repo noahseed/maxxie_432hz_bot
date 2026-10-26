@@ -48,7 +48,7 @@ Les commandes `sudo` suivantes sont à exécuter sur le VPS. Copier d'abord le p
 
 ```bash
 ssh UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr 'mkdir -p ~/maxxie-bot'
-scp bot.py reliability.py catalogue.py backups.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
+scp bot.py reliability.py catalogue.py duplicates.py backups.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 scp deploy/maxxie-bot.service deploy/maxxie-backup.service deploy/maxxie-backup.timer deploy/configure.py UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 ```
 
@@ -59,7 +59,7 @@ sudo apt-get update
 sudo apt-get install -y python3 ca-certificates
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin maxxie-bot
 sudo install -d -m 755 /opt/maxxie-bot
-sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/catalogue.py ~/maxxie-bot/backups.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
+sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/catalogue.py ~/maxxie-bot/duplicates.py ~/maxxie-bot/backups.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
 sudo install -m 644 ~/maxxie-bot/configure.py /opt/maxxie-bot/
 sudo install -m 600 ~/maxxie-bot/.env.example /etc/maxxie-bot.env
 sudo nano /etc/maxxie-bot.env
@@ -96,6 +96,16 @@ Après modification de la liste, redémarrer le service. La promotion se déclen
 Un administrateur (ou le propriétaire) du groupe peut envoyer un MP3 en privé au bot : celui-ci copie le message dans le groupe, avec sa légende, puis confirme la publication en privé. Le statut d'administrateur est vérifié auprès de Telegram à chaque envoi ; la liste de promotion automatique ne suffit pas à autoriser une publication.
 
 Les MP3 sont acceptés comme audio ou document, selon leur extension `.mp3` (ou leur type `audio/mpeg` si aucun nom n'est fourni). Le fichier n'est ni téléchargé sur le VPS ni converti. Un MP3 envoyé comme document reste un document. Les autres fichiers audio sont refusés. Le bot doit pouvoir publier dans le groupe.
+
+## Détection des doublons
+
+Avant de publier un MP3 reçu en privé, le bot vérifie successivement l’identifiant unique du fichier Telegram, la combinaison artiste/titre et le nom du fichier dans le catalogue du groupe. Les accents et majuscules sont ignorés. La mention entre crochets ou parenthèses « 432 Hz » ne distingue pas deux titres ; les indications de version comme acoustique, live et remix restent significatives. Un nom de fichier commun est seulement un indice, pas une preuve de fichier identique.
+
+Si une correspondance existe, le MP3 n’est pas publié immédiatement. L’administrateur reçoit un avertissement privé avec les liens existants et les boutons **Publier quand même** et **Annuler**. La confirmation est personnelle et valable une heure. Confirmer crée une seule tâche persistante ; cliquer plusieurs fois ne crée pas plusieurs publications. Les droits d’administrateur sont revérifiés à la confirmation et avant l’envoi. Une fois la publication confirmée, le bouton Annuler ne peut plus l’annuler.
+
+Un MP3 envoyé directement dans le groupe est déjà publié : le bot l’indexe puis tente de prévenir son expéditeur en privé si un autre message correspond. Il ne supprime rien et ne publie aucun avertissement dans le groupe. Sans conversation privée déjà ouverte, cet avertissement peut être impossible. Les métadonnées servent à repérer les ressemblances ; le bot ne télécharge ni ne compare les octets des MP3. Voir l’[identifiant unique des fichiers Telegram](https://core.telegram.org/bots/api#audio).
+
+Les anciennes entrées reçoivent une clé artiste/titre depuis leur libellé existant. L’identifiant de fichier et le nom précis sont enregistrés pour les nouveaux fichiers reçus ; ils peuvent être inconnus pour un ancien export. Les confirmations sont stockées temporairement dans `STATE_DB`, avec les seules références et métadonnées nécessaires, puis nettoyées après expiration. La référence au message privé est effacée de la confirmation dès sa mise en file. Une restauration de sauvegarde invalide toutes ces confirmations pour éviter de republier un ancien envoi.
 
 ## Recherche musicale et aide
 

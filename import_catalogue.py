@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from catalogue import artist_metadata, music_metadata
+from catalogue import artist_metadata, duplicate_metadata, music_metadata
 
 
 def export_rows(data, group_id):
@@ -39,7 +39,7 @@ def export_rows(data, group_id):
         if type(message_id) is not int or message_id <= 0 or message_id in seen:
             raise ValueError('Identifiant de message invalide ou répété')
         seen.add(message_id)
-        rows.append((str(group_id), message_id, *metadata, *artist_metadata({"audio": media})))
+        rows.append((str(group_id), message_id, *metadata, *artist_metadata({"audio": media}), *duplicate_metadata({"audio": media})))
     return rows
 
 
@@ -49,7 +49,7 @@ def import_export(source, database, group_id):
         # Ne pas ouvrir TaskStore : le bot reste seul propriétaire de sa file.
         db.execute('BEGIN IMMEDIATE')
         before = db.total_changes
-        db.executemany('INSERT OR IGNORE INTO music(group_id,message_id,label,searchable,artist,artist_key) VALUES (?,?,?,?,?,?)', rows)
+        db.executemany('INSERT OR IGNORE INTO music(group_id,message_id,label,searchable,artist,artist_key,file_unique_id,track_key,file_name_key) VALUES (?,?,?,?,?,?,?,?,?)', rows)
         added = db.total_changes - before
         # Compléter les anciens catalogues sans remplacer les artistes renseignés depuis.
         db.executemany("UPDATE music SET artist=?,artist_key=? WHERE group_id=? AND message_id=? AND artist='' AND ?<>''",

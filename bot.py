@@ -12,7 +12,8 @@ import time
 from datetime import datetime, timezone
 
 from catalogue import (artists_page, create_session, get_session, index_music,
-                       message_link, music_page, random_music)
+                       find_duplicates, message_link, music_page, random_music)
+from duplicates import create_publication, resolve_publication
 from reliability import JournalAPI, READ_METHODS, TaskStore, TelegramError, Worker
 
 LOG = logging.getLogger("maxxie")
@@ -254,6 +255,7 @@ class Bot:
                     raise
         if admin:
             lines.extend(["", "Administrateurs : envoyez un MP3 en privé pour le publier.",
+                          "Si un doublon est détecté, choisissez Publier quand même ou Annuler.",
                           "Pour cataloguer un ancien MP3 : répondez à son message dans le groupe avec /indexer."])
         if user_id == self.owner_user_id and self.owner_user_id:
             lines.append("/statut — état du bot et des sauvegardes (propriétaire uniquement)")
@@ -343,7 +345,60 @@ class Bot:
                 and isinstance(copied.get("message_id"), int)):
             index_music(self.background, self.group_id, message, copied.get("message_id"))
 
-    def publish_mp3(self, message):
+    def warn_duplicate(self, message, already_posted=False):
+        if not isinstance(self.background, TaskStore):
+            return False
+        user = message.get("from", {})
+        if not user.get("id") or user.get("is_bot"):
+            return False
+        matches, reason = find_duplicates(self.background, self.group_id, message,
+                                           message.get("message_id", 0) if already_posted else 0)
+        if not matches:
+            return False
+        lines = ["⚠️ Doublon possible", reason + ".", ""]
+        buttons = []
+        for mid, label in matches:
+            lines.append(label[:200])
+            link = message_link(self.group_id, self.group_url, mid)
+            if link:
+                buttons.append([{"text": "Voir le morceau existant 🎵", "url": link}])
+        if already_posted:
+            lines.append("Le nouveau MP3 est déjà dans le groupe. Aucun message n’a été supprimé.")
+        else:
+            token = create_publication(self.background, self.group_id, message)
+            lines.append("Le MP3 n’a pas été publié. Voulez-vous le publier quand même ?")
+            buttons.append([{"text": "Publier quand même", "callback_data": f"duplicate:{token}:yes"},
+                            {"text": "Annuler", "callback_data": f"duplicate:{token}:no"}])
+        try:
+            self.action("duplicate-warning", "sendMessage", chat_id=user["id"], text="\n".join(lines),
+                        reply_markup={"inline_keyboard": buttons})
+        except TelegramError as error:
+            if not already_posted or error.code not in (400, 403):
+                raise
+            LOG.info("Avertissement de doublon privé impossible.")
+        return True
+
+    def confirm_duplicate(self, chat_id, token, approve):
+        if not isinstance(self.background, TaskStore):
+            return
+        if approve:
+            member = self.api.call("getChatMember", chat_id=self.group_id, user_id=chat_id)
+            if member.get("status") not in ("creator", "administrator"):
+                self.action("duplicate-denied", "sendMessage", chat_id=chat_id,
+                            text="Seuls les administrateurs actuels du groupe peuvent confirmer une publication.")
+                return
+        result = resolve_publication(self.background, token, chat_id, self.group_id, approve)
+        text = {"queued": "Publication demandée ✅", "approved": "Cette publication a déjà été confirmée.",
+                "cancelled": "Publication annulée. Aucun MP3 n’a été envoyé au groupe.",
+                "expired": "Cette confirmation a expiré ou n’est plus disponible. Renvoyez le MP3 si nécessaire."}[result]
+        self.action("duplicate-decision", "sendMessage", chat_id=chat_id, text=text)
+
+    def publish_confirmed(self, payload):
+        if str(payload.get("group_id")) != self.group_id:
+            raise PermissionError("Le groupe de destination a changé")
+        self.publish_mp3(payload["message"], allow_duplicate=True)
+
+    def publish_mp3(self, message, allow_duplicate=False):
         chat_id = message["chat"]["id"]
         user = message.get("from", {})
         if not user.get("id") or user.get("is_bot"):
@@ -368,6 +423,8 @@ class Bot:
         if not (filename.endswith(".mp3") or (not filename and media.get("mime_type") == "audio/mpeg")):
             self.action("invalid-mp3", "sendMessage", chat_id=chat_id,
                           text="Envoyez un fichier au format MP3 (.mp3).")
+            return
+        if not allow_duplicate and self.warn_duplicate(message):
             return
         try:
             # Copier le message conserve fichier, légende et métadonnées,
@@ -413,6 +470,11 @@ class Bot:
                     self.show_artists(chat["id"])
                 elif data == "random":
                     self.show_random(chat["id"])
+                elif data.startswith("duplicate:"):
+                    parts = data.split(":")
+                    if (len(parts) == 3 and len(parts[1]) == 16 and
+                            all(char in "0123456789abcdef" for char in parts[1]) and parts[2] in ("yes", "no")):
+                        self.confirm_duplicate(chat["id"], parts[1], parts[2] == "yes")
                 elif data.startswith("browse:"):
                     parts = data.split(":")
                     if (len(parts) == 3 and len(parts[1]) == 16 and
@@ -470,6 +532,7 @@ class Bot:
         elif str(chat.get("id")) == self.group_id:
             if isinstance(self.background, TaskStore):
                 index_music(self.background, self.group_id, message)
+                self.warn_duplicate(message, already_posted=True)
             command = message.get("text", "").split(maxsplit=1)
             if command and command[0].lower() in ("/indexer", f"/indexer@{self.username.lower()}"):
                 user_id = message.get("from", {}).get("id")
@@ -570,6 +633,8 @@ def main():
         def handle_task(kind, payload):
             if kind == "update":
                 bot.handle(payload)
+            elif kind == "publish_confirmed":
+                bot.publish_confirmed(payload)
             elif kind == "notify_new_visitor":
                 bot.notify_new_visitor(payload)
             elif kind == "promote_known":
