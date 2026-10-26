@@ -228,8 +228,8 @@ class Bot:
                       reply_markup={"inline_keyboard": [
                           [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}],
                           [{"text": "Rejoindre le groupe 🎵", "url": self.group_url}],
-                          [{"text": "Artistes", "callback_data": "artists"},
-                           {"text": "Hasard", "callback_data": "random"}],
+                          [{"text": "Artistes 🎶", "callback_data": "artists"},
+                           {"text": "Hasard 🎲", "callback_data": "random"}],
                           [{"text": "Aide ❓", "callback_data": "help"}]
                       ]})
 

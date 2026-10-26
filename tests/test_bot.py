@@ -79,7 +79,7 @@ class WelcomeTests(unittest.TestCase):
         self.assertEqual(keyboard[0][0]["callback_data"], "rules")
         self.assertEqual(keyboard[3][0]["callback_data"], "help")
         self.assertEqual(keyboard[1][0]["url"], "https://t.me/Maxxie_432Hz")
-        self.assertEqual([button["text"] for button in keyboard[2]], ["Artistes", "Hasard"])
+        self.assertEqual([button["text"] for button in keyboard[2]], ["Artistes 🎶", "Hasard 🎲"])
         self.assertEqual([button["callback_data"] for button in keyboard[2]], ["artists", "random"])
         self.assertEqual([len(row) for row in keyboard], [1, 1, 2, 1])
 
