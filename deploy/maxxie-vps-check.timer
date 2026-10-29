@@ -1,0 +1,9 @@
+[Unit]
+Description=Vérification APT à 11 h heure de Paris
+
+[Timer]
+OnCalendar=*-*-* 11:00:00 Europe/Paris
+Persistent=true
+
+[Install]
+WantedBy=timers.target

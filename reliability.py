@@ -50,6 +50,9 @@ class TaskStore:
             CREATE TABLE IF NOT EXISTS music (
                 group_id TEXT NOT NULL, message_id INTEGER NOT NULL, label TEXT NOT NULL,
                 searchable TEXT NOT NULL, PRIMARY KEY(group_id,message_id));
+            CREATE TABLE IF NOT EXISTS contact_prompts (
+                chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, expires REAL NOT NULL,
+                PRIMARY KEY(chat_id,message_id));
             CREATE TABLE IF NOT EXISTS browse_sessions (
                 token TEXT PRIMARY KEY, chat_id INTEGER NOT NULL, kind TEXT NOT NULL,
                 value TEXT NOT NULL, expires REAL NOT NULL);
@@ -228,6 +231,7 @@ class TaskStore:
         with self.lock, self.db:
             self.db.execute("DELETE FROM duplicate_publications WHERE expires<?", (time.time(),))
             self.db.execute("DELETE FROM browse_sessions WHERE expires<?", (time.time(),))
+            self.db.execute("DELETE FROM contact_prompts WHERE expires<?", (time.time(),))
             self.db.execute("DELETE FROM command_limits WHERE started<?", (time.time() - 86400,))
             self.db.execute("DELETE FROM media_limits WHERE started<?", (time.time() - 86400,))
             self.db.execute("DELETE FROM actions WHERE task_id IN (SELECT id FROM tasks "

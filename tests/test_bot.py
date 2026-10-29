@@ -69,19 +69,55 @@ class WelcomeTests(unittest.TestCase):
         self.api = Mock()
         self.bot = Bot(self.api, "MaxxieBot", "-10042", "https://t.me/Maxxie_432Hz", "Règlement")
 
-    def test_private_start_gets_five_buttons_with_artists_and_random_side_by_side(self):
+    def test_private_start_gets_seven_buttons_with_artists_and_random_side_by_side(self):
         self.bot.handle({"message": {"chat": {"id": 7, "type": "private"}, "text": "/start"}})
         args = self.api.call.call_args.kwargs
         self.assertNotIn("Règlement", args["text"])
         self.assertEqual(args["chat_id"], 7)
         keyboard = args["reply_markup"]["inline_keyboard"]
-        self.assertEqual(sum(len(row) for row in keyboard), 5)
-        self.assertEqual(keyboard[0][0]["callback_data"], "rules")
-        self.assertEqual(keyboard[3][0]["callback_data"], "help")
+        self.assertEqual(sum(len(row) for row in keyboard), 7)
+        self.assertEqual([b["callback_data"] for b in keyboard[0]], ["about432", "rules"])
+        self.assertEqual(keyboard[0][0]["text"], "432 Hertz ? 🎼")
+        self.assertEqual([b["callback_data"] for b in keyboard[3]], ["contact", "help"])
         self.assertEqual(keyboard[1][0]["url"], "https://t.me/Maxxie_432Hz")
         self.assertEqual([button["text"] for button in keyboard[2]], ["Artistes 🎶", "Hasard 🎲"])
         self.assertEqual([button["callback_data"] for button in keyboard[2]], ["artists", "random"])
-        self.assertEqual([len(row) for row in keyboard], [1, 1, 2, 1])
+        self.assertEqual([len(row) for row in keyboard], [2, 1, 2, 2])
+
+    def test_432_button_displays_explanation_only_in_private(self):
+        self.bot.handle({"callback_query": {"id": "432", "data": "about432", "from": {"id": 7},
+                        "message": {"chat": {"id": 7, "type": "private"}}}})
+        params = self.api.call.call_args.kwargs
+        self.assertEqual(params["chat_id"], 7)
+        self.assertIn("la de référence à 432 Hz", params["text"])
+        self.assertIn("se détendre", params["text"])
+        self.api.reset_mock()
+        self.bot.handle({"callback_query": {"id": "432-group", "data": "about432", "from": {"id": 7},
+                        "message": {"chat": {"id": -10042, "type": "supergroup"}}}})
+        self.api.call.assert_called_once_with("answerCallbackQuery", callback_query_id="432-group")
+
+    def test_432hz_and_regles_commands_match_buttons_in_private(self):
+        for command, expected in (("/432hz", "la de référence à 432 Hz"),
+                                  ("/432hz@MaxxieBot", "la de référence à 432 Hz"),
+                                  ("/regles", "Règlement"), ("/regles@MaxxieBot", "Règlement")):
+            with self.subTest(command=command):
+                self.api.reset_mock()
+                self.bot.handle({"message": {"chat": {"id": 7, "type": "private"}, "text": command}})
+                self.api.call.assert_called_once()
+                self.assertEqual(self.api.call.call_args.kwargs["chat_id"], 7)
+                self.assertIn(expected, self.api.call.call_args.kwargs["text"])
+        for command in ("/432hz", "/regles", "/432hz@OtherBot", "/regles@OtherBot"):
+            self.api.reset_mock()
+            kind = "private" if "OtherBot" in command else "supergroup"
+            self.bot.handle({"message": {"chat": {"id": 7, "type": kind}, "text": command}})
+            self.api.call.assert_not_called()
+
+    def test_help_lists_432hz_and_regles(self):
+        self.api.call.return_value = {"status": "member"}
+        self.bot.show_help(7, 7)
+        text = self.api.call.call_args.kwargs["text"]
+        self.assertIn("/432hz —", text)
+        self.assertIn("/regles —", text)
 
     def test_unknown_commands_and_other_private_messages_are_silent(self):
         for body in ({"text": "/inconnue"}, {"text": "/status"},
@@ -129,7 +165,8 @@ class WelcomeTests(unittest.TestCase):
         args = self.api.call.call_args.kwargs
         self.assertEqual(args["chat_id"], 7)
         self.assertNotIn("Règlement", args["text"])
-        self.assertEqual(args["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "rules")
+        self.assertEqual([b["callback_data"] for b in args["reply_markup"]["inline_keyboard"][0]],
+                         ["about432", "rules"])
 
     def test_unreachable_member_has_no_group_fallback_and_next_member_is_welcomed(self):
         for code in (400, 403):

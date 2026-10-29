@@ -1,0 +1,13 @@
+[Unit]
+Description=Vérification quotidienne des mises à jour du VPS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/maxxie-bot.env
+ExecStart=/usr/bin/python3 -I /opt/maxxie-bot/vps_runner.py check
+StateDirectory=maxxie-vps
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=infinity

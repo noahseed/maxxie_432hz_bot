@@ -4,8 +4,8 @@ Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
 
 ## Fonctionnement
 
-- La commande privée `/start` affiche l'accueil avec cinq boutons sur quatre lignes : « Lire les règles du groupe », « Rejoindre le groupe », puis « Artistes » et « Hasard » côte à côte, et enfin « Aide ». Les boutons Artistes et Hasard ouvrent les mêmes fonctions que `/artistes` et `/hasard` en privé. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
-- L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les cinq boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
+- La commande privée `/start` affiche l'accueil avec sept boutons sur quatre lignes : « 432 Hertz ? 🎼 » et « Lire les règles du groupe » côte à côte, « Rejoindre le groupe », puis « Artistes » et « Hasard » côte à côte, et enfin « Contact » et « Aide » côte à côte. Les boutons Artistes et Hasard ouvrent les mêmes fonctions que `/artistes` et `/hasard` en privé. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
+- L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les sept boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
 - Le règlement reste en privé. Les messages ordinaires du groupe sont ignorés.
 - Le lien du groupe est accessible à toute personne contactant le bot. Il ne s'agit pas d'un contrôle d'admission ni d'une obligation d'accepter les règles.
 
@@ -161,7 +161,7 @@ Au démarrage, une panne réseau ou Telegram entraîne une nouvelle tentative av
 
 ## Stockage, accueil et diagnostic
 
-`WELCOME_FILE` pointe vers `welcome.txt`, qui contient le texte du menu d'accueil. Modifier ce fichier puis redémarrer le service ; les cinq boutons sont conservés. Ne pas écraser un fichier personnalisé lors d'une mise à jour.
+`WELCOME_FILE` pointe vers `welcome.txt`, qui contient le texte du menu d'accueil. Modifier ce fichier puis redémarrer le service ; les sept boutons sont conservés. Ne pas écraser un fichier personnalisé lors d'une mise à jour.
 
 Les événements en attente peuvent contenir le texte privé, le nom affiché, le pseudonyme et les références des fichiers Telegram. Les MP3 eux-mêmes ne sont jamais téléchargés. Le dossier `/var/lib/maxxie-bot` est réservé au compte du service ; les fichiers SQLite ne sont pas versionnés dans Git. Les données des tâches terminées ou abandonnées sont effacées, puis leurs métadonnées et empreintes d'actions sont nettoyées après 30 jours. Une tâche en attente peut conserver ses données pendant une longue indisponibilité. Sauvegarder les bases avec l'API de sauvegarde SQLite ou après arrêt du service, en tenant compte des fichiers WAL ; ne pas copier seulement le fichier principal pendant son utilisation.
 
@@ -239,6 +239,50 @@ python3 -m unittest discover -s tests -v
 
 GitHub Actions exécute automatiquement ces tests sur Python 3.11 et 3.13 à chaque push et pull request. Les tests simulent les erreurs 429, coupures réseau, interruptions pendant les envois, redémarrages et une file de plus de 128 tâches, sans contacter Telegram.
 
-Après installation : contacter le bot en privé, vérifier les cinq boutons ; faire rejoindre ce compte au groupe et vérifier la réception de l'accueil en privé, sans publication du bot dans le groupe. Un membre n'ayant jamais ouvert le bot ou l'ayant bloqué ne doit pas recevoir d'accueil. Vérifier aussi que le bot reste silencieux pendant une conversation ordinaire.
+Après installation : contacter le bot en privé, vérifier les sept boutons ; faire rejoindre ce compte au groupe et vérifier la réception de l'accueil en privé, sans publication du bot dans le groupe. Un membre n'ayant jamais ouvert le bot ou l'ayant bloqué ne doit pas recevoir d'accueil. Vérifier aussi que le bot reste silencieux pendant une conversation ordinaire.
 
 Les sauvegardes du VPS sont verrouillées pendant la création, la rotation et le chiffrement pour éviter les exécutions simultanées. La copie sur l’ordinateur refuse une archive de plus de 36 heures (ou datée de plus de cinq minutes dans le futur) ; le service signale alors un échec sans remplacer les copies locales existantes.
+
+## Maintenance du VPS depuis Telegram
+
+Les timers `maxxie-vps-check.timer` et `maxxie-vps-request.timer` vérifient les mises à jour à **11 h, Europe/Paris** (heure d'été/hiver automatique, échéance manquée rattrapée) et relèvent les demandes privées sous environ une minute. Le destinataire est `OWNER_USER_ID`, à défaut `NOTIFY_CHAT_ID`, un identifiant positif ayant déjà démarré le bot. Une vérification réussie sans paquet disponible reste silencieuse. Une erreur est signalée en privé.
+
+Le message liste les paquets disponibles et propose « Mettre le VPS à jour ». Seul le propriétaire, dans sa conversation privée, peut utiliser ce bouton. Sa validité est de 24 heures, jusqu'à la prochaine vérification, et son jeton est consommé avant l'opération pour empêcher une répétition. Les anciens boutons peuvent rester visibles mais deviennent inactifs.
+
+Le bot transmet une demande fixe au service root via `/var/lib/maxxie-bot/vps-update-request` ; il conserve son service sans privilèges et ne reçoit aucun droit sudo. Les scripts installés dans `/opt/maxxie-bot` doivent appartenir à root et ne pas être modifiables par le bot. L'état et les journaux APT résident dans `/var/lib/maxxie-vps`, réservé à root.
+
+Le service exécute `apt-get --error-on=any update`, puis `apt-get -y --with-new-pkgs -o Dpkg::Options::=--force-confold upgrade`, l'équivalent automatisable de `apt update && apt upgrade`. Les configurations locales sont conservées ; les suppressions de paquets ne sont pas demandées. Aucun redémarrage du VPS ne suit automatiquement une mise à jour. Des services peuvent être redémarrés par les paquets. Le rapport privé indique le succès ou l'échec, les paquets proposés avant opération, ceux restant à mettre à jour et la présence du marqueur système de redémarrage nécessaire. Les rapports non livrés sont conservés et retentés à la prochaine relève ; une coupure après livraison peut exceptionnellement produire un doublon. Une maintenance interrompue n'est jamais relancée automatiquement et produit un avertissement.
+
+Installation après copie des fichiers sur le VPS :
+
+```bash
+sudo install -o root -g root -m 644 vps_updates.py deploy/vps_runner.py /opt/maxxie-bot/
+sudo install -o root -g root -m 644 deploy/maxxie-vps-* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart maxxie-bot
+sudo systemctl enable --now maxxie-vps-check.timer maxxie-vps-request.timer
+sudo systemctl start maxxie-vps-check.service
+sudo systemctl list-timers 'maxxie-vps-*'
+```
+
+Installer aussi la version de `bot.py` incluant le bouton avant de redémarrer. La vérification manuelle ci-dessus actualise les index sans installer de paquets. Diagnostic : `sudo journalctl -u maxxie-vps-check -u maxxie-vps-request` et `/var/lib/maxxie-vps/last-apt.log`.
+
+Lorsque le rapport de mise à jour signale `/var/run/reboot-required`, il affiche aussi **Redémarrer le VPS**. Ce bouton privé est réservé au propriétaire, valable 24 heures et utilisable une seule fois. Au clic, le service revérifie le marqueur puis programme le redémarrage avec `shutdown -r +1` et envoie une confirmation privée. Le traitement de la demande prend environ une minute, puis le redémarrage est programmé une minute plus tard. Le bot sera temporairement indisponible. Si le marqueur a disparu, aucun redémarrage n’est lancé. Un échec de programmation est signalé en privé.
+
+La commande privée `/update` (ou `/update@Maxxie_432Hz_Bot`) permet au propriétaire de demander une vérification ponctuelle, sans installer de paquets. Elle est présentée dans son `/aide`. Les autres comptes reçoivent un refus en privé ; la commande est ignorée dans les groupes. Le service traite la demande sous environ une minute et envoie le résultat en privé : liste et bouton de mise à jour si nécessaire, ou confirmation que le VPS est à jour. Les demandes répétées avant traitement sont regroupées. La demande de vérification utilise un fichier distinct pour préserver une éventuelle demande d'installation ou de redémarrage en attente. La vérification quotidienne conserve son silence lorsqu'aucune mise à jour n'est disponible.
+
+
+## Contact privé du propriétaire
+
+Dans `/start`, **Contact ✉️** se trouve à gauche d’**Aide ❓**. Le bot invite le visiteur à répondre à son message ; Telegram ouvre directement le champ de réponse. Cette invitation est valable une heure et survit au redémarrage du bot. Seules les réponses à cette invitation sont transférées : les messages privés ordinaires restent ignorés. Les commandes conservent leur fonctionnement habituel.
+
+Le bot transmet au propriétaire configuré dans `OWNER_USER_ID` (à défaut `NOTIFY_CHAT_ID`) le nom, le pseudonyme éventuel et l’identifiant Telegram du visiteur, puis transfère le message original avec `forwardMessage`. Le destinataire doit avoir démarré le bot. Les textes et pièces jointes transférables sont acceptés ; un MP3 envoyé comme réponse à l’invitation Contact n’est pas publié dans le groupe. Le visiteur est informé de ce transfert avant de rédiger et reçoit ensuite une confirmation ou un avis d’échec si Telegram refuse le transfert. Une erreur réseau incertaine suit les règles du journal d’actions existant, sans renvoi automatique pouvant créer un doublon.
+
+Les invitations ne stockent que l’identifiant privé, la référence du message du bot et leur expiration dans `STATE_DB`. Elles sont supprimées au nettoyage horaire après expiration. Le contenu du message suit la rétention habituelle des tâches. La fonctionnalité ne transmet aucune réponse du propriétaire au visiteur automatiquement.
+
+
+## Présentation du 432 Hz
+
+Le bouton **432 Hertz ? 🎼**, à gauche des règles dans `/start`, affiche en privé un court texte expliquant le la de référence à 432 Hz, les ressentis possibles de détente et les limites des connaissances actuelles. Le texte privilégie le plaisir d’écoute sans promesse thérapeutique. Repères : [étude pilote de 2019](https://pubmed.ncbi.nlm.nih.gov/31031095/) et [essai pilote de 2022](https://pmc.ncbi.nlm.nih.gov/articles/PMC9534204/), dont les auteurs demandent des études supplémentaires.
+
+Les commandes privées `/432hz` et `/regles`, affichées dans l’aide de tous les visiteurs, ouvrent respectivement le texte de présentation du 432 Hz et les règles du groupe. Elles acceptent aussi la forme adressée au bot (`/432hz@Maxxie_432Hz_Bot`, `/regles@Maxxie_432Hz_Bot`).

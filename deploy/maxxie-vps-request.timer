@@ -1,0 +1,9 @@
+[Unit]
+Description=Relève des demandes Telegram de maintenance VPS
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=60
+
+[Install]
+WantedBy=timers.target

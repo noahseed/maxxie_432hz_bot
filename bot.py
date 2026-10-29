@@ -227,12 +227,65 @@ class Bot:
         self.action(f"welcome:{chat_id}", "sendMessage", chat_id=chat_id,
                       text=self.welcome,
                       reply_markup={"inline_keyboard": [
-                          [{"text": "Lire les règles du groupe 📜", "callback_data": "rules"}],
+                          [{"text": "432 Hertz ? 🎼", "callback_data": "about432"},
+                           {"text": "Lire les règles du groupe 📜", "callback_data": "rules"}],
                           [{"text": "Rejoindre le groupe 🎵", "url": self.group_url}],
                           [{"text": "Artistes 🎶", "callback_data": "artists"},
                            {"text": "Hasard 🎲", "callback_data": "random"}],
-                          [{"text": "Aide ❓", "callback_data": "help"}]
+                          [{"text": "Contact ✉️", "callback_data": "contact"},
+                           {"text": "Aide ❓", "callback_data": "help"}]
                       ]})
+
+    def show_contact(self, chat_id):
+        if not self.owner_user_id or not isinstance(self.background, TaskStore):
+            self.action("contact-unavailable", "sendMessage", chat_id=chat_id,
+                        text="Le contact est momentanément indisponible.")
+            return
+        prompt = self.action("contact-prompt", "sendMessage", chat_id=chat_id,
+                             text="Répondez à ce message pour contacter le propriétaire. Le bot lui transférera votre message en privé, avec votre nom et votre identifiant Telegram. Cette invitation est valable une heure. Pour revenir à l’accueil : /start.",
+                             reply_markup={"force_reply": True, "input_field_placeholder": "Votre message au propriétaire"})
+        with self.background.lock, self.background.db:
+            self.background.db.execute("INSERT OR IGNORE INTO contact_prompts VALUES (?,?,?)",
+                                       (chat_id, prompt["message_id"], time.time() + 3600))
+
+    def relay_contact(self, message):
+        if not self.owner_user_id or not isinstance(self.background, TaskStore):
+            return False
+        chat_id = message["chat"]["id"]
+        user = message.get("from", {})
+        reply_id = message.get("reply_to_message", {}).get("message_id")
+        if user.get("id") != chat_id or not reply_id:
+            return False
+        with self.background.lock:
+            found = self.background.db.execute(
+                "SELECT 1 FROM contact_prompts WHERE chat_id=? AND message_id=? AND expires>?",
+                (chat_id, reply_id, time.time())).fetchone()
+        if not found:
+            return False
+        name = " ".join(user.get(key, "") for key in ("first_name", "last_name")).strip() or "Sans nom"
+        username = f"@{user['username']}" if user.get("username") else "Aucun pseudonyme"
+        try:
+            self.action("contact-identity", "sendMessage", chat_id=self.owner_user_id,
+                        text=f"Contact d’un visiteur ✉️\n{name}\n{username}\nIdentifiant Telegram : {chat_id}")
+            self.action("contact-forward", "forwardMessage", chat_id=self.owner_user_id,
+                        from_chat_id=chat_id, message_id=message["message_id"])
+        except TelegramError as error:
+            if error.code not in (400, 403):
+                raise
+            self.action("contact-failed", "sendMessage", chat_id=chat_id,
+                        text="Votre message n’a pas pu être transféré. Réessayez plus tard avec le bouton Contact.")
+            return True
+        self.action("contact-sent", "sendMessage", chat_id=chat_id,
+                    text="Votre message a été transféré au propriétaire ✅")
+        return True
+
+    def show_432(self, chat_id):
+        self.action("about432", "sendMessage", chat_id=chat_id,
+                    text="432 Hertz ? 🎶\n\n"
+                         "Accorder une musique en 432 Hz, c’est choisir un la de référence à 432 Hz plutôt qu’à 440 Hz : les notes sont légèrement plus graves.\n\n"
+                         "Certaines personnes apprécient cette couleur sonore pour se détendre, se recentrer ou accompagner un moment de calme. Le plaisir d’écoute et le ressenti restent personnels.\n\n"
+                         "Les études sont encore limitées : aucun bienfait thérapeutique propre au 432 Hz n’est solidement établi.\n\n"
+                         "Installez-vous confortablement, gardez un volume doux et laissez la musique vous accompagner 🌿")
 
     def show_rules(self, chat_id):
         self.action(f"rules:{chat_id}", "sendMessage", chat_id=chat_id, text=self.rules)
@@ -240,12 +293,15 @@ class Bot:
     def show_help(self, chat_id, user_id):
         lines = ["Aide — Maxxie 432Hz 🎵", "",
                  "/start — accueil, règles et lien du groupe",
+                 "/432hz — découvrir l’accordage en 432 Hz",
+                 "/regles — lire les règles du groupe",
                  "/recherche artiste ou titre — chercher un morceau",
                  "Exemple : /recherche Edith Piaf",
                  "/artistes — parcourir les artistes et leurs morceaux",
                  "/hasard — découvrir un morceau au hasard",
                  "/aide — afficher cette aide", "/id — votre identifiant Telegram", "",
-                 "Le catalogue contient les morceaux enregistrés par le bot, pas tout l’historique du groupe."]
+                 "Le catalogue contient les morceaux enregistrés par le bot, pas tout l’historique du groupe.",
+                 "Pour écrire au propriétaire : bouton Contact dans /start, puis répondez à l’invitation du bot."]
         admin = user_id == self.owner_user_id and bool(self.owner_user_id)
         if user_id and not admin:
             try:
@@ -259,6 +315,7 @@ class Bot:
                           "Pour cataloguer un ancien MP3 : répondez à son message dans le groupe avec /indexer."])
         if user_id == self.owner_user_id and self.owner_user_id:
             lines.append("/statut — état du bot et des sauvegardes (propriétaire uniquement)")
+            lines.append("/update — vérifier les mises à jour du VPS (propriétaire uniquement)")
         self.action("help", "sendMessage", chat_id=chat_id, text="\n".join(lines))
 
     def find_music(self, chat_id, query):
@@ -462,8 +519,24 @@ class Bot:
             chat = callback.get("message", {}).get("chat", {})
             data = callback.get("data", "")
             if chat.get("type") == "private" and callback.get("from", {}).get("id", chat["id"]) == chat["id"]:
-                if data == "rules":
+                if data.startswith("vps-reboot:"):
+                    if self.owner_user_id and chat["id"] == self.owner_user_id:
+                        from vps_updates import request_upgrade
+                        if request_upgrade(data[len("vps-reboot:"):], reboot=True):
+                            self.action("vps-reboot-request", "sendMessage", chat_id=chat["id"],
+                                        text="Demande de redémarrage reçue. Elle sera vérifiée sous une minute ; vous recevrez la confirmation en privé.")
+                elif data.startswith("vps:"):
+                    if self.owner_user_id and chat["id"] == self.owner_user_id:
+                        from vps_updates import request_upgrade
+                        if request_upgrade(data[4:]):
+                            self.action("vps-request", "sendMessage", chat_id=chat["id"],
+                                        text="Demande reçue. Si le bouton est encore valide, la mise à jour démarrera sous une minute. Un bouton expiré nécessite une nouvelle vérification quotidienne.")
+                elif data == "about432":
+                    self.show_432(chat["id"])
+                elif data == "rules":
                     self.show_rules(chat["id"])
+                elif data == "contact":
+                    self.show_contact(chat["id"])
                 elif data == "help":
                     self.show_help(chat["id"], callback.get("from", {}).get("id", chat["id"]))
                 elif data == "artists":
@@ -497,8 +570,25 @@ class Bot:
             user = message.get("from", {})
             parts = message.get("text", "").split(maxsplit=1)
             command = parts[0].lower() if parts else ""
+            if command in ("/update", f"/update@{self.username.lower()}"):
+                if (self.owner_user_id and user.get("id") == self.owner_user_id
+                        and chat["id"] == self.owner_user_id):
+                    from vps_updates import request_check
+                    request_check()
+                    self.action("vps-check-request", "sendMessage", chat_id=chat["id"],
+                                text="Vérification du VPS demandée. Elle démarrera sous environ une minute ; le résultat vous sera envoyé ici.")
+                else:
+                    self.action("vps-check-denied", "sendMessage", chat_id=chat["id"],
+                                text="Cette commande est réservée au propriétaire du bot.")
+                return
             if command in ("/statut", f"/statut@{self.username.lower()}"):
                 self.show_status(chat["id"], user.get("id"))
+                return
+            if command in ("/432hz", f"/432hz@{self.username.lower()}"):
+                self.show_432(chat["id"])
+                return
+            if command in ("/regles", f"/regles@{self.username.lower()}"):
+                self.show_rules(chat["id"])
                 return
             if command in ("/aide", f"/aide@{self.username.lower()}"):
                 self.show_help(chat["id"], user.get("id"))
@@ -513,6 +603,8 @@ class Bot:
                 self.show_random(chat["id"])
                 return
             start = command in ("/start", f"/start@{self.username.lower()}")
+            if not command.startswith("/") and self.relay_contact(message):
+                return
             if "audio" in message or "document" in message:
                 self.publish_mp3(message)
                 return
