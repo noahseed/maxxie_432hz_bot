@@ -9,8 +9,8 @@ from catalogue import artist_metadata, duplicate_metadata, music_metadata
 
 
 def export_rows(data, group_id):
-    if not isinstance(data, dict) or data.get('type') not in ('public_supergroup', 'private_supergroup'):
-        raise ValueError('Un export de supergroupe Telegram est requis')
+    if not isinstance(data, dict) or data.get('type') not in ('public_supergroup', 'private_supergroup', 'public_channel', 'private_channel'):
+        raise ValueError('Un export de groupe ou de canal Telegram est requis')
     exported_id = data.get('id')
     if type(exported_id) is not int or exported_id <= 0 or str(group_id) != '-100' + str(exported_id):
         raise ValueError('L’export ne correspond pas au groupe configuré')

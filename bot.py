@@ -114,17 +114,20 @@ class Telegram:
 
 class Bot:
     def __init__(self, api, username, group_id, group_url, rules, admin_ids=(), moderator_ids=(),
-                 notify_chat_id=None, visitors=None, welcome=None, owner_user_id=None, backup_dir=None):
+                 notify_chat_id=None, visitors=None, welcome=None, owner_user_id=None, backup_dir=None, chat_type="supergroup"):
         self.api = api
         self.username = username
-        self.group_id = group_id
+        self.group_id = str(group_id)
+        self.chat_type = chat_type
+        self.destination_label = "canal" if chat_type == "channel" else "groupe"
         self.group_url = group_url
-        self.rules = rules
+        self.rules = rules.replace("{destination}", self.destination_label)
         self.admin_ids = frozenset(admin_ids)
         self.moderator_ids = frozenset(moderator_ids)
         self.notify_chat_id = notify_chat_id
         self.visitors = visitors
         self.welcome = welcome if welcome is not None else Path(__file__).with_name("welcome.txt").read_text(encoding="utf-8").strip()
+        self.welcome = self.welcome.replace("{destination}", self.destination_label)
         self.background = None
         self.owner_user_id = owner_user_id
         self.backup_dir = Path(backup_dir) if backup_dir else None
@@ -203,6 +206,22 @@ class Bot:
         member = self.api.call("getChatMember", chat_id=self.group_id, user_id=user_id)
         if member["status"] in ("creator", "left", "kicked"):
             return
+        if self.chat_type == "channel":
+            moderation = user_id in self.moderator_ids
+            if member["status"] == "administrator":
+                if member.get("can_post_messages") and (not moderation or member.get("can_delete_messages")):
+                    return
+                rights = {key: value for key, value in member.items() if key.startswith("can_") and
+                          key not in ("can_be_edited", "can_restrict_members", "can_pin_messages", "can_manage_topics", "can_manage_tags")}
+                rights.update(can_post_messages=True)
+                if moderation:
+                    rights["can_delete_messages"] = True
+            else:
+                rights = dict(can_manage_chat=True, can_post_messages=True, can_edit_messages=False,
+                              can_delete_messages=moderation, can_promote_members=False,
+                              can_change_info=False, can_invite_users=False)
+            self.action("promotion", "promoteChatMember", chat_id=self.group_id, user_id=user_id, **rights)
+            return
         moderation = user_id in self.moderator_ids
         if member["status"] == "administrator":
             if not moderation or (member.get("can_delete_messages") and member.get("can_restrict_members")):
@@ -228,8 +247,8 @@ class Bot:
                       text=self.welcome,
                       reply_markup={"inline_keyboard": [
                           [{"text": "432 Hertz ? 🎼", "callback_data": "about432"},
-                           {"text": "Lire les règles du groupe 📜", "callback_data": "rules"}],
-                          [{"text": "Rejoindre le groupe 🎵", "url": self.group_url}],
+                           {"text": f"Lire les règles du {self.destination_label} 📜", "callback_data": "rules"}],
+                          [{"text": f"Rejoindre le {self.destination_label} 🎵", "url": self.group_url}],
                           [{"text": "Artistes 🎶", "callback_data": "artists"},
                            {"text": "Hasard 🎲", "callback_data": "random"}],
                           [{"text": "Contact ✉️", "callback_data": "contact"},
@@ -292,15 +311,15 @@ class Bot:
 
     def show_help(self, chat_id, user_id):
         lines = ["Aide — Maxxie 432Hz 🎵", "",
-                 "/start — accueil, règles et lien du groupe",
+                 f"/start — accueil, règles et lien du {self.destination_label}",
                  "/432hz — découvrir l’accordage en 432 Hz",
-                 "/regles — lire les règles du groupe",
+                 f"/regles — lire les règles du {self.destination_label}",
                  "/recherche artiste ou titre — chercher un morceau",
                  "Exemple : /recherche Edith Piaf",
                  "/artistes — parcourir les artistes et leurs morceaux",
                  "/hasard — découvrir un morceau au hasard",
                  "/aide — afficher cette aide", "/id — votre identifiant Telegram", "",
-                 "Le catalogue contient les morceaux enregistrés par le bot, pas tout l’historique du groupe.",
+                 f"Le catalogue contient les morceaux enregistrés par le bot, pas tout l’historique du {self.destination_label}.",
                  "Pour écrire au propriétaire : bouton Contact dans /start, puis répondez à l’invitation du bot."]
         admin = user_id == self.owner_user_id and bool(self.owner_user_id)
         if user_id and not admin:
@@ -312,6 +331,8 @@ class Bot:
         if admin:
             lines.extend(["", "Administrateurs : envoyez un MP3 en privé pour le publier.",
                           "Si un doublon est détecté, choisissez Publier quand même ou Annuler.",
+                          "Pour cataloguer un ancien MP3 : transférez-le du canal au bot en privé, sans le republier."
+                          if self.chat_type == "channel" else
                           "Pour cataloguer un ancien MP3 : répondez à son message dans le groupe avec /indexer."])
         if user_id == self.owner_user_id and self.owner_user_id:
             lines.append("/statut — état du bot et des sauvegardes (propriétaire uniquement)")
@@ -392,7 +413,7 @@ class Bot:
             buttons = []
             link = message_link(self.group_id, self.group_url, message_id)
             if link:
-                buttons.append([{"text": "Écouter dans le groupe 🎵", "url": link}])
+                buttons.append([{"text": f"Écouter dans le {self.destination_label} 🎵", "url": link}])
             buttons.append([{"text": "Encore au hasard 🎲", "callback_data": "random"}])
             params["reply_markup"] = {"inline_keyboard": buttons}
         self.action("random", "sendMessage", **params)
@@ -402,10 +423,33 @@ class Bot:
                 and isinstance(copied.get("message_id"), int)):
             index_music(self.background, self.group_id, message, copied.get("message_id"))
 
+    def can_publish(self, member):
+        return member.get("status") == "creator" or (member.get("status") == "administrator" and
+                (self.chat_type != "channel" or member.get("can_post_messages", False)))
+
+    def index_forwarded_channel(self, message):
+        origin = message.get("forward_origin", {})
+        if (self.chat_type != "channel" or origin.get("type") != "channel" or
+                str(origin.get("chat", {}).get("id")) != self.group_id):
+            return False
+        user_id = message.get("from", {}).get("id")
+        if not user_id:
+            return True
+        member = self.api.call("getChatMember", chat_id=self.group_id, user_id=user_id)
+        added = False
+        if member.get("status") in ("creator", "administrator") and isinstance(self.background, TaskStore):
+            added = index_music(self.background, self.group_id, message, origin.get("message_id"))
+        self.action("channel-index", "sendMessage", chat_id=message["chat"]["id"],
+                    text="Morceau du canal ajouté au catalogue ✅" if added else
+                         "Indexation impossible : vérifiez vos droits administrateur et transférez un MP3 de ce canal.")
+        return True
+
     def warn_duplicate(self, message, already_posted=False):
         if not isinstance(self.background, TaskStore):
             return False
         user = message.get("from", {})
+        if already_posted and self.chat_type == "channel":
+            user = {"id": self.notify_chat_id or self.owner_user_id}
         if not user.get("id") or user.get("is_bot"):
             return False
         matches, reason = find_duplicates(self.background, self.group_id, message,
@@ -420,7 +464,7 @@ class Bot:
             if link:
                 buttons.append([{"text": "Voir le morceau existant 🎵", "url": link}])
         if already_posted:
-            lines.append("Le nouveau MP3 est déjà dans le groupe. Aucun message n’a été supprimé.")
+            lines.append(f"Le nouveau MP3 est déjà dans le {self.destination_label}. Aucun message n’a été supprimé.")
         else:
             token = create_publication(self.background, self.group_id, message)
             lines.append("Le MP3 n’a pas été publié. Voulez-vous le publier quand même ?")
@@ -440,13 +484,13 @@ class Bot:
             return
         if approve:
             member = self.api.call("getChatMember", chat_id=self.group_id, user_id=chat_id)
-            if member.get("status") not in ("creator", "administrator"):
+            if not self.can_publish(member):
                 self.action("duplicate-denied", "sendMessage", chat_id=chat_id,
-                            text="Seuls les administrateurs actuels du groupe peuvent confirmer une publication.")
+                            text=f"Seuls les administrateurs autorisés à publier dans le {self.destination_label} peuvent confirmer une publication.")
                 return
         result = resolve_publication(self.background, token, chat_id, self.group_id, approve)
         text = {"queued": "Publication demandée ✅", "approved": "Cette publication a déjà été confirmée.",
-                "cancelled": "Publication annulée. Aucun MP3 n’a été envoyé au groupe.",
+                "cancelled": f"Publication annulée. Aucun MP3 n’a été envoyé au {self.destination_label}.",
                 "expired": "Cette confirmation a expiré ou n’est plus disponible. Renvoyez le MP3 si nécessaire."}[result]
         self.action("duplicate-decision", "sendMessage", chat_id=chat_id, text=text)
 
@@ -471,9 +515,9 @@ class Bot:
             return
         # Vérifier le statut réel, sans promouvoir un compte pour cet envoi.
         member = self.api.call("getChatMember", chat_id=self.group_id, user_id=user["id"])
-        if member["status"] not in ("creator", "administrator"):
+        if not self.can_publish(member):
             self.action("publication-denied", "sendMessage", chat_id=chat_id,
-                          text="Seuls les administrateurs du groupe peuvent publier un MP3 via le bot.")
+                          text=f"Seuls les administrateurs du {self.destination_label} autorisés à publier peuvent envoyer un MP3 via le bot.")
             return
         media = message.get("audio") or message.get("document") or {}
         filename = media.get("file_name", "").lower()
@@ -492,14 +536,14 @@ class Bot:
             if error.code not in (400, 403):
                 raise
             self.action("mp3-error", "sendMessage", chat_id=chat_id,
-                          text="Le MP3 n'a pas pu être publié. Vérifiez que le bot peut publier dans le groupe.")
+                          text=f"Le MP3 n'a pas pu être publié. Vérifiez que le bot peut publier dans le {self.destination_label}.")
             return
         self.index_published(message, copied)
         self.confirm_mp3(chat_id)
 
     def confirm_mp3(self, chat_id):
         try:
-            self.action("mp3-confirmation", "sendMessage", chat_id=chat_id, text="MP3 publié dans le groupe ✅")
+            self.action("mp3-confirmation", "sendMessage", chat_id=chat_id, text=f"MP3 publié dans le {self.destination_label} ✅")
         except TelegramError as error:
             if error.code == 429:
                 raise
@@ -560,6 +604,14 @@ class Bot:
             if str(membership.get("chat", {}).get("id")) == self.group_id:
                 self.later(self.promote_known, membership["new_chat_member"]["user"])
             return
+        channel_post = update.get("channel_post") or update.get("edited_channel_post")
+        if channel_post:
+            if (str(channel_post.get("chat", {}).get("id")) == self.group_id and
+                    channel_post.get("chat", {}).get("type") == "channel" and isinstance(self.background, TaskStore)):
+                index_music(self.background, self.group_id, channel_post)
+                if "channel_post" in update:
+                    self.warn_duplicate(channel_post, already_posted=True)
+            return
         message = update.get("message") or update.get("edited_message", {})
         chat = message.get("chat", {})
         if "edited_message" in update:
@@ -606,6 +658,8 @@ class Bot:
             if not command.startswith("/") and self.relay_contact(message):
                 return
             if "audio" in message or "document" in message:
+                if self.index_forwarded_channel(message):
+                    return
                 self.publish_mp3(message)
                 return
             if command in ("/id", f"/id@{self.username.lower()}"):
@@ -621,7 +675,7 @@ class Bot:
             if start:
                 self.later(self.notify_new_visitor, user)
                 self.later(self.promote_known, user)
-        elif str(chat.get("id")) == self.group_id:
+        elif str(chat.get("id")) == self.group_id and self.chat_type != "channel":
             if isinstance(self.background, TaskStore):
                 index_music(self.background, self.group_id, message)
                 self.warn_duplicate(message, already_posted=True)
@@ -672,6 +726,27 @@ def wait_for_startup(api, stop):
     return None
 
 
+def wait_for_destination(api, group_id, stop):
+    delay = 2
+    while not stop.is_set():
+        try:
+            chat_type = api.call("getChat", chat_id=group_id).get("type")
+            if chat_type not in ("group", "supergroup", "channel"):
+                raise SystemExit("La destination doit être un groupe ou un canal Telegram.")
+            if chat_type == "channel":
+                identity = api.call("getMe")
+                member = api.call("getChatMember", chat_id=group_id, user_id=identity["id"])
+                if member.get("status") != "administrator" or not member.get("can_post_messages"):
+                    raise SystemExit("Le bot doit être administrateur du canal avec le droit de publier.")
+            return chat_type
+        except TelegramError as error:
+            if error.code not in (0, 429) and error.code < 500:
+                raise SystemExit(f"Destination Telegram inaccessible (code {error.code}).") from None
+            stop.wait(max(1, error.retry_after) if error.code == 429 else delay)
+            delay = min(60, delay * 2)
+    return None
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     token = os.environ.get("BOT_TOKEN", "").strip()
@@ -716,11 +791,14 @@ def main():
         username = wait_for_startup(api, stop)
         if username is None:
             return
+        chat_type = wait_for_destination(api, group_id, stop)
+        if chat_type is None:
+            return
         journal = JournalAPI(api, store)
         bot = Bot(journal, username, group_id, group_url, rules, admin_ids, moderator_ids,
                   int(notify_chat_id) if notify_chat_id else None, visitors, welcome,
                   int(owner_user_id) if owner_user_id else None,
-                  os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"))
+                  os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"), chat_type=chat_type)
         bot.background = store
         def handle_task(kind, payload):
             if kind == "update":
@@ -746,7 +824,7 @@ def main():
                     stop.wait(1)  # Ralentir la réception sans abandonner de tâche.
                     continue
                 updates = api.call("getUpdates", offset=store.offset(), timeout=30, limit=50,
-                                   allowed_updates=["message", "edited_message", "chat_member", "callback_query"])
+                                   allowed_updates=["message", "edited_message", "channel_post", "edited_channel_post", "chat_member", "callback_query"])
                 store.ingest(updates)
                 if time.monotonic() - last_cleanup > 3600:
                     store.cleanup()

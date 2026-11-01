@@ -11,6 +11,18 @@ Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
 
 Un bot ne peut pas initier une conversation privée avec un utilisateur qui ne l'a jamais démarré. Telegram contrôle cette permission lors de l'envoi ; il n'est pas nécessaire de conserver une liste locale des conversations. Le bot reçoit les messages de service d'arrivée même avec le mode confidentialité activé. Les messages de service natifs de Telegram indiquant une arrivée ne sont pas supprimés. Voir la [documentation Telegram](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get).
 
+## Fonctionnement dans un canal
+
+Le bot prend en charge les groupes, supergroupes et canaux. Les variables historiques `GROUP_ID` et `GROUP_URL` désignent aussi le canal ; le type est détecté avec Telegram au démarrage. Dans un canal, le bot doit être administrateur avec `can_post_messages`. Il reçoit `channel_post` et `edited_channel_post` pour indexer les MP3 et leurs modifications.
+
+Les commandes, la recherche, les artistes, le hasard, le contact et l’aide restent en privé. Les boutons parlent alors du canal. Le texte d’accueil et le règlement acceptent `{destination}`, remplacé par « canal » ou « groupe ». Les administrateurs qui publient via le bot doivent eux-mêmes avoir le droit de publier dans le canal. La promotion automatique d’un compte autorisé accorde ce droit ; le profil modérateur ajoute la suppression, sans gestion des membres ni droits de promotion.
+
+Les canaux n’envoient pas les messages d’arrivée `new_chat_members` des groupes : aucun accueil automatique à l’abonnement n’est promis. Les notifications de premier `/start` privé restent disponibles. Les avertissements de doublon pour une publication directe dans le canal vont en privé à `NOTIFY_CHAT_ID` (ou, à défaut, `OWNER_USER_ID`), car l’identité réelle de son auteur peut être masquée. Aucun avertissement n’est publié dans le canal.
+
+Pour indexer un ancien MP3 du canal sans le republier, un administrateur peut le **transférer du canal au bot en privé** : le bot utilise la référence du message d’origine. Si Telegram empêche le transfert, utiliser un export JSON du canal avec l’importeur. Un MP3 transmis depuis une autre origine conserve le parcours de publication normal.
+
+Changer de destination ne transfère pas l’historique : les entrées de l’ancien groupe sont conservées sous son identifiant, et ne s’affichent pas dans le catalogue du canal. Ne jamais remplacer simplement leurs identifiants de groupe : leurs liens seraient faux. Il faut indexer les véritables messages du canal. Les tâches de publication confirmées vers l’ancienne destination sont refusées si celle-ci a changé.
+
 ## Préparer Telegram
 
 1. Ajouter le bot au groupe Maxxie 432Hz et l'autoriser à envoyer des messages. Les droits d'administrateur ne sont pas nécessaires pour ces fonctions.
