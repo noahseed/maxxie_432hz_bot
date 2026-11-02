@@ -13,7 +13,7 @@ Un bot ne peut pas initier une conversation privée avec un utilisateur qui ne l
 
 ## Fonctionnement dans un canal
 
-Le bot prend en charge les groupes, supergroupes et canaux. Les variables historiques `GROUP_ID` et `GROUP_URL` désignent aussi le canal ; le type est détecté avec Telegram au démarrage. Dans un canal, le bot doit être administrateur avec `can_post_messages`. Il reçoit `channel_post` et `edited_channel_post` pour indexer les MP3 et leurs modifications.
+Le bot fonctionne uniquement avec un canal. Les événements provenant des groupes sont ignorés et une destination de type groupe est refusée au démarrage. Les variables historiques `GROUP_ID` et `GROUP_URL` désignent aussi le canal ; le type est détecté avec Telegram au démarrage. Dans un canal, le bot doit être administrateur avec `can_post_messages`. Il reçoit `channel_post` et `edited_channel_post` pour indexer les MP3 et leurs modifications.
 
 Les commandes, la recherche, les artistes, le hasard, le contact et l’aide restent en privé. Les boutons parlent alors du canal. Le texte d’accueil et le règlement acceptent `{destination}`, remplacé par « canal » ou « groupe ». Les administrateurs qui publient via le bot doivent eux-mêmes avoir le droit de publier dans le canal. La promotion automatique d’un compte autorisé accorde ce droit ; le profil modérateur ajoute la suppression, sans gestion des membres ni droits de promotion.
 

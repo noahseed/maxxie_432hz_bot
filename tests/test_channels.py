@@ -24,6 +24,25 @@ class ChannelTests(unittest.TestCase):
         self.song = {'message_id': 100, 'chat': {'id': -10042, 'type': 'channel'},
                      'audio': {'file_name': 'music.mp3', 'performer': 'Artiste', 'title': 'Chanson'}}
 
+    def test_group_events_are_ignored_in_channel_mode(self):
+        for kind in ('group', 'supergroup'):
+            chat = {'id': -10042, 'type': kind}
+            for update in (
+                {'message': {**self.song, 'chat': chat}},
+                {'edited_message': {**self.song, 'chat': chat}},
+                {'chat_member': {'chat': chat, 'new_chat_member': {'user': {'id': 7}}}},
+                {'callback_query': {'id': 'x', 'message': {'chat': chat}, 'data': 'rules'}},
+            ):
+                self.bot.handle(update)
+        self.raw.call.assert_not_called()
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM music').fetchone()[0], 0)
+
+    def test_startup_rejects_group_destination(self):
+        for kind in ('group', 'supergroup'):
+            self.raw.call.return_value = {'type': kind}
+            with self.assertRaises(SystemExit):
+                wait_for_destination(self.raw, '-10042', threading.Event())
+
     def test_channel_posts_and_edits_are_indexed_without_writing_to_channel(self):
         self.bot.handle({'channel_post': self.song})
         self.assertEqual(search_music(self.store, '-10042', 'chanson')[0][0], 100)
@@ -120,10 +139,11 @@ class ChannelTests(unittest.TestCase):
 
 
 class DestinationStartupTests(unittest.TestCase):
-    def test_group_detection_keeps_existing_mode(self):
+    def test_group_destination_is_rejected(self):
         api = Mock()
         api.call.return_value = {'type': 'supergroup'}
-        self.assertEqual(wait_for_destination(api, '-42', threading.Event()), 'supergroup')
+        with self.assertRaises(SystemExit):
+            wait_for_destination(api, '-42', threading.Event())
 
     def test_channel_requires_bot_administrator_and_posting_permission(self):
         for rights in ({'status': 'member'}, {'status': 'administrator', 'can_post_messages': False}):

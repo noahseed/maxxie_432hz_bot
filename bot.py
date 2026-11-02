@@ -551,6 +551,13 @@ class Bot:
             LOG.warning("MP3 publié, mais confirmation privée impossible.")
 
     def handle(self, update):
+        # En mode canal, ignorer tous les événements provenant de groupes.
+        if self.chat_type == "channel":
+            for key in ("message", "edited_message", "chat_member", "callback_query"):
+                event = update.get(key, {})
+                chat = event.get("message", event).get("chat", {})
+                if chat.get("type") in ("group", "supergroup"):
+                    return
         callback = update.get("callback_query")
         if callback:
             try:
@@ -731,8 +738,8 @@ def wait_for_destination(api, group_id, stop):
     while not stop.is_set():
         try:
             chat_type = api.call("getChat", chat_id=group_id).get("type")
-            if chat_type not in ("group", "supergroup", "channel"):
-                raise SystemExit("La destination doit être un groupe ou un canal Telegram.")
+            if chat_type != "channel":
+                raise SystemExit("La destination doit être un canal Telegram ; les groupes ne sont plus pris en charge.")
             if chat_type == "channel":
                 identity = api.call("getMe")
                 member = api.call("getChatMember", chat_id=group_id, user_id=identity["id"])
