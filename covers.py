@@ -1,5 +1,6 @@
 """Pochettes automatiques : édition en place, fichiers temporaires, rapport privé."""
 import fcntl
+from contextvars import ContextVar
 import hashlib
 from http.client import HTTPSConnection
 from io import BytesIO
@@ -21,7 +22,9 @@ import uuid
 from bot import Telegram, connect_ipv4
 from catalogue import index_music, normalize, track_identity
 from reliability import TelegramError
+from database import connect, target, is_postgres
 
+FETCH_DEADLINE = ContextVar('cover_fetch_deadline', default=None)
 MAX_AUDIO = 20 * 1024 * 1024
 SEARCH_REVISION = 'album-aware-no-432-v2'
 MAX_ATTEMPTS = 3
@@ -56,9 +59,14 @@ def allowed_url(url):
 
 def fetch(url, limit=2_000_000):
     allowed_url(url)
+    remaining = FETCH_DEADLINE.get()
+    if remaining is not None:
+        remaining -= time.monotonic()
+        if remaining <= 0:
+            raise Retry('Délai de recherche de jaquette dépassé.')
     request = Request(url, headers={'User-Agent': USER_AGENT})
     try:
-        with build_opener(SafeRedirect()).open(request, timeout=20) as response:
+        with build_opener(SafeRedirect()).open(request, timeout=min(20, remaining) if remaining is not None else 20) as response:
             data = response.read(limit + 1)
             if len(data) > limit:
                 raise Skip('Image ou réponse trop volumineuse.')
@@ -193,12 +201,16 @@ class MediaAPI:
             connection._create_connection = connect_ipv4
         return connection
 
-    def download(self, file_id, target):
+    def download(self, file_id, target, deadline=None):
         info = self.api.call('getFile', file_id=file_id)
         path = info.get('file_path', '')
         if not re.fullmatch(r'[A-Za-z0-9_./-]+', path) or '..' in path or info.get('file_size', 0) > MAX_AUDIO:
             raise Skip('Fichier inaccessible ou supérieur à la limite de téléchargement.')
+        if deadline is not None and time.monotonic() >= deadline:
+            raise Skip('Délai de récupération de la jaquette dépassé.')
         connection = self.connection()
+        if deadline is not None:
+            connection.timeout = max(0.1, deadline - time.monotonic())
         try:
             # Fixed Telegram host; never expose the token in a URL or exception.
             connection.request('GET', '/file' + self.api.path + path)
@@ -208,6 +220,12 @@ class MediaAPI:
             total = 0
             with target.open('wb') as stream:
                 while True:
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise Skip('Délai de récupération de la jaquette dépassé.')
+                        if connection.sock is not None:
+                            connection.sock.settimeout(min(90, remaining))
                     block = response.read(65536)
                     if not block:
                         break
@@ -253,22 +271,29 @@ class MediaAPI:
 
 
 class CoverBatch:
-    def __init__(self, api, catalogue, directory, destination, owner):
+    def __init__(self, api, catalogue, directory, destination, owner, database_url=None):
         self.api, self.catalogue = api, catalogue
         self.directory, self.destination, self.owner = Path(directory), str(destination), owner
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.directory / 'covers.sqlite3')
+        cover_target = database_url or os.environ.get('DATABASE_URL') or self.directory / 'covers.sqlite3'
+        self.db = connect(cover_target, schema='covers')
         self.db.execute('CREATE TABLE IF NOT EXISTS covers (group_id TEXT, message_id INTEGER, status TEXT, detail TEXT, source TEXT, updated REAL, PRIMARY KEY(group_id,message_id))')
         if 'revision' not in {row[1] for row in self.db.execute('PRAGMA table_info(covers)')}:
             self.db.execute("ALTER TABLE covers ADD COLUMN revision TEXT NOT NULL DEFAULT ''")
         columns = {row[1] for row in self.db.execute('PRAGMA table_info(covers)')}
         for column in ('attempts', 'next_retry'):
             if column not in columns:
-                self.db.execute(f'ALTER TABLE covers ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0')
+                datatype = 'REAL' if column == 'next_retry' else 'INTEGER'
+                self.db.execute(f'ALTER TABLE covers ADD COLUMN {column} {datatype} NOT NULL DEFAULT 0')
+        if is_postgres(cover_target):
+            types = {row[1]: row[2] for row in self.db.execute('PRAGMA table_info(covers)')}
+            if types.get('next_retry') != 'double precision':
+                self.db.execute('ALTER TABLE covers ALTER COLUMN next_retry TYPE DOUBLE PRECISION USING next_retry::double precision')
         self.db.execute('CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, text TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS temporary_messages (message_id INTEGER PRIMARY KEY)')
         self.db.commit()
         with self.catalogue.lock, self.catalogue.db:
+            self.catalogue.db.execute('CREATE TABLE IF NOT EXISTS music_media (group_id TEXT, message_id INTEGER, data TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(group_id,message_id))')
             self.catalogue.db.execute('CREATE TABLE IF NOT EXISTS music_artwork (group_id TEXT, message_id INTEGER, track_key TEXT NOT NULL, jpeg BLOB NOT NULL, source_url TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(group_id,message_id))')
             self.catalogue.db.execute('CREATE INDEX IF NOT EXISTS artwork_track ON music_artwork(group_id,track_key)')
         self.media = MediaAPI(api)
@@ -473,9 +498,10 @@ class CoverBatch:
 
 def progress_snapshot(directory, destination):
     path = Path(directory) / 'covers.sqlite3'
-    if not path.exists():
+    url = os.environ.get('DATABASE_URL', '')
+    if not url and not path.exists():
         return None
-    db = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)
+    db = connect(url or path.resolve().as_uri() + '?mode=ro', schema='covers', readonly=True, uri=True, timeout=1)
     try:
         return dict(db.execute('SELECT status,count(*) FROM covers WHERE group_id=? AND revision=? GROUP BY status',
                                (str(destination), SEARCH_REVISION)))
@@ -497,7 +523,7 @@ def main():
     with (directory / 'lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         api = Telegram(os.environ['BOT_TOKEN'], ipv4_only=os.environ.get('TELEGRAM_IPV4_ONLY', '1') == '1')
-        db = sqlite3.connect(os.environ.get('STATE_DB', '/var/lib/maxxie-bot/tasks.sqlite3'))
+        db = connect(target())
         db.execute('PRAGMA busy_timeout=10000')
         store = SimpleNamespace(db=db, lock=threading.RLock())
         try:

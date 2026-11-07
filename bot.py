@@ -1,4 +1,4 @@
-"""Bot d'accueil Maxxie 432Hz — Python 3.11+, sans dépendances externes."""
+"""Bot Maxxie 432Hz — Python 3.11+, stockage PostgreSQL en production."""
 import json
 import base64
 import secrets
@@ -17,6 +17,7 @@ from catalogue import (artists_page, create_session, get_session, index_music,
                        find_duplicates, message_link, music_page, random_music)
 from duplicates import create_publication, resolve_publication
 from reliability import JournalAPI, READ_METHODS, TaskStore, TelegramError, Worker
+from database import connect, target, DATABASE_ERRORS
 
 LOG = logging.getLogger("maxxie")
 
@@ -24,7 +25,7 @@ LOG = logging.getLogger("maxxie")
 class StartVisitors:
     def __init__(self, path):
         self.lock = threading.RLock()
-        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db = connect(path, schema="visitors", check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS visitors (user_id INTEGER PRIMARY KEY)")
         self.db.commit()
 
@@ -155,6 +156,7 @@ class Bot:
         self.owner_user_id = owner_user_id
         self.backup_dir = Path(backup_dir) if backup_dir else None
         self.ai = None
+        self.random_artwork = None
 
     def action(self, step, method, **params):
         if isinstance(self.api, JournalAPI):
@@ -203,7 +205,7 @@ class Bot:
                               f"Remplacées : {progress.get('done', 0)} ; introuvables/non traitables : {progress.get('skipped', 0)}",
                               f"Erreurs à retenter : {progress.get('failed', 0)} ; échecs après 3 tentatives : {progress.get('exhausted', 0)}",
                               f"Pochettes incertaines (sans relance) : {progress.get('uncertain', 0)}"])
-        except (OSError, sqlite3.Error):
+        except DATABASE_ERRORS:
             lines.append("Progression des jaquettes momentanément indisponible.")
         self.action("status", "sendMessage", chat_id=chat_id, text="\n".join(lines))
 
@@ -514,12 +516,16 @@ class Bot:
                 buttons.append([{"text": f"Écouter dans le {self.destination_label} 🎵", "url": link}])
             buttons.append([{"text": "Encore au hasard 🎲", "callback_data": "random"}])
             params["reply_markup"] = {"inline_keyboard": buttons}
-            with self.background.lock:
-                artwork = self.background.db.execute(
-                    "SELECT a.jpeg FROM music_artwork a JOIN music m ON m.group_id=a.group_id AND m.message_id=a.message_id AND m.track_key=a.track_key WHERE a.group_id=? AND a.message_id=?",
-                    (self.group_id, message_id)).fetchone()
-            if artwork and artwork[0]:
-                params["photo"] = {"jpeg_base64": base64.b64encode(artwork[0]).decode("ascii")}
+            if self.random_artwork is not None:
+                jpeg = self.random_artwork.resolve(message_id)
+            else:
+                with self.background.lock:
+                    artwork = self.background.db.execute(
+                        "SELECT a.jpeg FROM music_artwork a JOIN music m ON m.group_id=a.group_id AND m.message_id=a.message_id AND m.track_key=a.track_key WHERE a.group_id=? AND a.message_id=?",
+                        (self.group_id, message_id)).fetchone()
+                jpeg = artwork[0] if artwork else None
+            if jpeg:
+                params["photo"] = {"jpeg_base64": base64.b64encode(jpeg).decode("ascii")}
                 params["caption"] = params.pop("text")
                 method = "sendPhoto"
         params.setdefault("reply_markup", {"inline_keyboard": []})["inline_keyboard"].append(
@@ -894,7 +900,7 @@ def main():
     if notify_chat_id:
         if not notify_chat_id.isdigit() or int(notify_chat_id) <= 0:
             raise SystemExit("NOTIFY_CHAT_ID doit être l'identifiant positif du destinataire privé.")
-        visitors = StartVisitors(os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"))
+        visitors = StartVisitors(os.environ.get("DATABASE_URL") or os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"))
     welcome = Path(os.environ.get("WELCOME_FILE", str(Path(__file__).with_name("welcome.txt")))).read_text(encoding="utf-8").strip()
     if not welcome or len(welcome) > 3500:
         raise SystemExit("Le message d'accueil doit contenir entre 1 et 3500 caractères.")
@@ -902,7 +908,7 @@ def main():
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.set())
     api = Telegram(token, ipv4_only=os.environ.get("TELEGRAM_IPV4_ONLY", "1") == "1")
-    store = TaskStore(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"),
+    store = TaskStore(target(),
                       owner_user_id=int(owner_user_id) if owner_user_id else None,
                       trusted_media_ids=admin_ids)
     workers = []
@@ -921,6 +927,9 @@ def main():
         bot.background = store
         from openai_chat import OpenAIChat
         bot.ai = OpenAIChat.from_environment()
+        from random_artwork import RandomArtwork
+        bot.random_artwork = RandomArtwork(api, store, group_id, bot.owner_user_id,
+                                           os.environ.get("COVERS_DIR", "/var/lib/maxxie-bot/covers"))
         def handle_task(kind, payload):
             if kind == "update":
                 bot.handle(payload)

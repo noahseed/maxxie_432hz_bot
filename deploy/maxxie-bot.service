@@ -1,9 +1,11 @@
 [Unit]
 Description=Accueil Telegram Maxxie 432Hz
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
+
+Wants=postgresql.service
 
 [Service]
 Type=simple

@@ -21,8 +21,8 @@ def verify_encrypted(archive, key, staging):
     unpacked = staging / "snapshot"
     unpacked.mkdir(mode=0o700)
     with tarfile.open(clear, "r:gz") as tar:
-        expected = {"manifest.json", "tasks.sqlite3", "visitors.sqlite3"}
-        if {member.name for member in tar.getmembers()} != expected:
+        expected = {member.name for member in tar.getmembers()}
+        if expected not in ({"manifest.json", "tasks.sqlite3", "visitors.sqlite3"}, {"manifest.json", "database.dump"}):
             raise ValueError("Archive inattendue")
         for name in expected:
             member = tar.getmember(name)

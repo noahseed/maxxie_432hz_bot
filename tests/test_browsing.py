@@ -156,6 +156,15 @@ class BrowsingTests(unittest.TestCase):
         self.assertEqual(self.result()['reply_markup']['inline_keyboard'][-1],
                          [{'text': 'Menu 🏠', 'callback_data': 'home'}])
 
+    def test_random_resolves_artwork_on_each_new_draw(self):
+        index_music(self.store, '-10042', self.song(1))
+        self.bot.random_artwork = Mock()
+        self.bot.random_artwork.resolve.return_value = b'resolved-jpeg'
+        self.click('random')
+        self.bot.random_artwork.resolve.assert_called_once_with(1)
+        self.assertEqual(self.raw.call.call_args.args[0], 'sendPhoto')
+        self.assertEqual(base64.b64decode(self.result()['photo']['jpeg_base64']), b'resolved-jpeg')
+
     def test_random_ignores_artwork_from_other_destination_or_old_metadata(self):
         index_music(self.store, '-10042', self.song(1))
         with self.store.db:

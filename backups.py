@@ -1,4 +1,4 @@
-"""Sauvegardes SQLite cohérentes par base, vérifiées et restaurables sans écrasement."""
+"""Sauvegardes PostgreSQL vérifiées ; compatibilité des anciennes archives SQLite."""
 import argparse
 from contextlib import closing, contextmanager
 import fcntl
@@ -39,6 +39,9 @@ def restore(snapshot, destination):
     """La destination doit être nouvelle ; jamais de remplacement de bases actives."""
     snapshot, destination = Path(snapshot), Path(destination)
     manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("format") == "postgresql":
+        from postgres_backups import prepare_restore
+        return prepare_restore(snapshot, destination)
     if set(manifest["files"]) != {"tasks.sqlite3", "visitors.sqlite3"}:
         raise ValueError("Manifest de sauvegarde inattendu")
     if destination.exists() or destination.is_symlink():
@@ -77,7 +80,11 @@ def encrypt_snapshot(snapshot, certificate, output):
         archive = Path(staging) / "snapshot.tar.gz"
         encrypted = Path(staging) / "snapshot.enc"
         with tarfile.open(archive, "w:gz") as tar:
-            for name in ("manifest.json", "tasks.sqlite3", "visitors.sqlite3"):
+            manifest = json.loads((snapshot / "manifest.json").read_text())
+            names = set(manifest["files"])
+            if names not in ({"tasks.sqlite3", "visitors.sqlite3"}, {"database.dump"}):
+                raise ValueError("Manifest inattendu")
+            for name in ["manifest.json", *sorted(names)]:
                 tar.add(snapshot / name, arcname=name)
         subprocess.run(["openssl", "cms", "-encrypt", "-binary", "-aes-256-gcm",
                         "-in", str(archive), "-out", str(encrypted), "-outform", "DER",
@@ -143,10 +150,18 @@ def main():
         if not args.restore or not args.restore_to:
             parser.error("Utiliser --restore et --restore-to ensemble")
         result = restore(args.restore, args.restore_to)
-        print(f"Restauration vérifiée dans {result}. Bases actives inchangées ; anciennes tâches en attente neutralisées.")
+        manifest = json.loads((args.restore / "manifest.json").read_text())
+        if manifest.get("format") == "postgresql":
+            print(f"Archive PostgreSQL vérifiée et préparée dans {result}. Restaurer avec restore_postgres.py dans une base vide.")
+        else:
+            print(f"Restauration vérifiée dans {result}. Bases actives inchangées ; anciennes tâches en attente neutralisées.")
     else:
         with backup_lock(os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups")):
-            result = _create_backup(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"),
+            if os.environ.get("DATABASE_URL"):
+                from postgres_backups import create_backup as pg_backup
+                result = pg_backup(os.environ["DATABASE_URL"], os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"), int(os.environ.get("BACKUP_KEEP", "14")))
+            else:
+                result = _create_backup(os.environ.get("STATE_DB", "/var/lib/maxxie-bot/tasks.sqlite3"),
                                    os.environ.get("VISITORS_DB", "/var/lib/maxxie-bot/visitors.sqlite3"),
                                    os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"),
                                    int(os.environ.get("BACKUP_KEEP", "14")))

@@ -33,7 +33,7 @@ def resolve_publication(store, token, chat_id, group_id, approve):
             store.db.execute('DELETE FROM duplicate_publications WHERE token=?', (token,))
             return 'cancelled'
         payload = json.dumps({'group_id': str(group_id), 'message': json.loads(row[0])})
-        task = store.db.execute("INSERT INTO tasks(kind,payload,lane,updated) VALUES ('publish_confirmed',?,0,?)",
+        task = store.db.execute("INSERT INTO tasks(kind,payload,lane,updated) VALUES ('publish_confirmed',?,0,?) RETURNING id",
                                 (payload, time.time()))
-        store.db.execute("UPDATE duplicate_publications SET task_id=?,message='{}' WHERE token=?", (task.lastrowid, token))
+        store.db.execute("UPDATE duplicate_publications SET task_id=?,message='{}' WHERE token=?", (task.fetchone()[0], token))
         return 'queued'

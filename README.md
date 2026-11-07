@@ -1,6 +1,30 @@
 # Maxxie 432Hz — bot Telegram
 
-Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
+Bot Telegram en Python 3.11+, prévu pour Debian 13, avec PostgreSQL et le pilote Psycopg 3. Mutagen et Pillow assurent le traitement des pochettes.
+
+## Stockage en production : PostgreSQL
+
+Le VPS utilise `DATABASE_URL=postgresql:///maxxie_bot?host=/var/run/postgresql`. Le compte système `maxxie-bot` s’authentifie localement par socket Unix (peer), sans mot de passe ajouté au dépôt. Son rôle PostgreSQL possède la base du bot, sans privilèges de superutilisateur, de création de bases ou de gestion de rôles. Les autres bases du serveur restent indépendantes.
+
+Trois schémas regroupent les données : `app` (catalogue, jaquettes JPEG, références MP3, sessions, cache IA, tâches et journal Telegram), `visitors` (visiteurs connus) et `covers` (progression et notifications des pochettes). Un verrou consultatif PostgreSQL interdit deux instances du bot sur la même base. Les transactions protègent l’offset Telegram et la file persistante.
+
+`DATABASE_URL` prend le pas sur `STATE_DB`, `VISITORS_DB` et l’ancien fichier SQLite des pochettes. Les anciennes bases et une copie des sources sont conservées sur le VPS avant migration pour récupération, mais les services ne les utilisent plus. Les exemples de stockage ou de restauration SQLite plus bas ne concernent que ces archives historiques et les tests de compatibilité.
+
+### Migration d’une installation existante
+
+Arrêter le bot, les pochettes et les sauvegardes avant de copier les données. Créer une base PostgreSQL vide appartenant au rôle applicatif, puis lancer `migrate_postgres.py --database URL --tasks CHEMIN --visitors CHEMIN --covers CHEMIN --report RAPPORT.json`. Le script refuse une destination déjà remplie et compare chaque table, chaque ligne et chaque jaquette binaire avant validation ; les identifiants et séquences sont conservés. Configurer ensuite `DATABASE_URL` dans `/etc/maxxie-bot.env`, installer les modules, redémarrer le bot puis les timers.
+
+### Sauvegardes PostgreSQL et restauration
+
+Le timer existant exécute désormais `pg_dump` au format personnalisé compressé. La capture inclut les trois schémas dans un snapshot cohérent, même pendant l’activité du bot. Chaque archive est réellement restaurée dans un serveur PostgreSQL temporaire isolé (socket privé, aucun port TCP), puis toutes ses tables et empreintes sont comparées au snapshot. Aucun privilège `CREATEDB` n’est nécessaire sur le serveur de production. Ce serveur de contrôle et ses fichiers sont supprimés à la fin du test.
+
+La rétention, le chiffrement CMS et le format de copie SSH sont conservés. Le nouveau format contient `manifest.json` et `database.dump`. L’ordinateur vérifie le déchiffrement, les empreintes et la lecture complète de l’archive avec `pg_restore` ; les anciens formats SQLite restent lisibles. Le client PostgreSQL doit être installé sur l’ordinateur qui exécute `offsite_pull.py`. La migration vérifie localement sur le VPS la sauvegarde et sa restauration, sans déclencher de nouveau transfert hors serveur.
+
+Pour restaurer : faire créer par l’administrateur une **nouvelle base vide**, puis exécuter `restore_postgres.py --snapshot DOSSIER_SAUVEGARDE --database URL_DESTINATION` avec le rôle autorisé. Le script refuse une base non vide ou utilisée par un bot, vérifie les données restaurées, puis neutralise les anciennes tâches en attente et les confirmations de publication pour éviter de rejouer des envois Telegram. Après contrôle, arrêter le bot et basculer `DATABASE_URL` vers cette base restaurée.
+
+### Tests PostgreSQL
+
+Les tests courants continuent de vérifier la compatibilité SQLite des anciennes sauvegardes et de la migration. `TEST_DATABASE_URL` active les tests d’intégration sur une **base dédiée aux tests**, dont les données de test sont effacées. Ils couvrent transactions, grands identifiants Telegram, images binaires, recherches accentuées, exclusivité du bot, reprise 429, confirmations et restauration. GitHub Actions exécute aussi ces tests sur un vrai serveur PostgreSQL.
 
 ## Fonctionnement
 
@@ -60,7 +84,7 @@ Les commandes `sudo` suivantes sont à exécuter sur le VPS. Copier d'abord le p
 
 ```bash
 ssh UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr 'mkdir -p ~/maxxie-bot'
-scp bot.py reliability.py catalogue.py duplicates.py backups.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
+scp bot.py reliability.py database.py catalogue.py duplicates.py backups.py postgres_backups.py migrate_postgres.py restore_postgres.py openai_chat.py ai_catalogue.py random_artwork.py covers.py import_catalogue.py welcome.txt rules.txt .env.example UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 scp deploy/maxxie-bot.service deploy/maxxie-backup.service deploy/maxxie-backup.timer deploy/configure.py UTILISATEUR_SSH@maxxie432.rondeau-cameira.fr:~/maxxie-bot/
 ```
 
@@ -68,10 +92,12 @@ Puis sur le VPS :
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3 ca-certificates
+sudo apt-get install -y python3 ca-certificates postgresql python3-psycopg python3-mutagen python3-pil
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin maxxie-bot
+sudo -u postgres createuser --login --no-superuser --no-createdb --no-createrole maxxie-bot
+sudo -u postgres createdb --owner=maxxie-bot maxxie_bot
 sudo install -d -m 755 /opt/maxxie-bot
-sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/catalogue.py ~/maxxie-bot/duplicates.py ~/maxxie-bot/backups.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
+sudo install -m 644 ~/maxxie-bot/bot.py ~/maxxie-bot/reliability.py ~/maxxie-bot/database.py ~/maxxie-bot/catalogue.py ~/maxxie-bot/duplicates.py ~/maxxie-bot/backups.py ~/maxxie-bot/postgres_backups.py ~/maxxie-bot/migrate_postgres.py ~/maxxie-bot/restore_postgres.py ~/maxxie-bot/openai_chat.py ~/maxxie-bot/ai_catalogue.py ~/maxxie-bot/random_artwork.py ~/maxxie-bot/covers.py ~/maxxie-bot/import_catalogue.py ~/maxxie-bot/welcome.txt ~/maxxie-bot/rules.txt /opt/maxxie-bot/
 sudo install -m 644 ~/maxxie-bot/configure.py /opt/maxxie-bot/
 sudo install -m 600 ~/maxxie-bot/.env.example /etc/maxxie-bot.env
 sudo nano /etc/maxxie-bot.env
@@ -91,7 +117,7 @@ Si l'utilisateur système existe déjà, ne pas répéter `useradd`. Pour une mi
 
 Le service utilise le long polling : seules des connexions HTTPS sortantes vers Telegram sont nécessaires. Aucun serveur web, certificat TLS ou port entrant supplémentaire n'est requis. Ne lancer qu'une instance avec ce jeton ; un webhook déjà configuré doit être retiré avant utilisation. Le bot refuse de supprimer automatiquement un webhook existant.
 
-Le bot conserve les identifiants des visiteurs déjà signalés et une file de tâches SQLite protégée. Les événements en attente sont enregistrés avant leur confirmation auprès de Telegram. Leurs données sont effacées une fois le traitement terminé ; les métadonnées de diagnostic sont conservées 30 jours.
+Le bot conserve les identifiants des visiteurs déjà signalés et une file de tâches PostgreSQL protégée. Les événements en attente sont enregistrés avant leur confirmation auprès de Telegram. Leurs données sont effacées une fois le traitement terminé ; les métadonnées de diagnostic sont conservées 30 jours.
 
 ## Administrateurs reconnus automatiquement
 
@@ -144,7 +170,7 @@ Le bot doit être administrateur pour recevoir les publications ordinaires du gr
 Après une sauvegarde, exécuter avec le compte du service et un export placé dans un dossier privé :
 
 ```bash
-sudo -u maxxie-bot python3 /opt/maxxie-bot/import_catalogue.py /CHEMIN/export.json --database /var/lib/maxxie-bot/tasks.sqlite3 --group-id=-100IDENTIFIANT
+sudo -u maxxie-bot python3 /opt/maxxie-bot/import_catalogue.py /CHEMIN/export.json --database 'postgresql:///maxxie_bot?host=/var/run/postgresql' --group-id=-100IDENTIFIANT
 ```
 
 Remplacer le chemin et l’identifiant par les valeurs réelles. Le bilan indique le nombre de MP3, les ajouts, les entrées déjà présentes et le total. Une erreur annule les ajouts de la transaction. Supprimer la copie temporaire de l’export après vérification ; ne jamais versionner l’historique privé dans Git.
@@ -190,6 +216,8 @@ Un verrou de fichier exclusif refuse une seconde instance avant toute récupéra
 `OWNER_USER_ID` désigne le seul compte autorisé à consulter `/statut` (à défaut, l'identifiant privé `NOTIFY_CHAT_ID` est utilisé). Les administrateurs du groupe n'obtiennent pas ce droit automatiquement. La commande fonctionne uniquement en privé et indique le nombre de tâches en attente, en cours, terminées, échouées ou incertaines, les identifiants des cinq dernières tâches à vérifier et la date de la dernière sauvegarde contrôlée. Une sauvegarde de plus de 36 heures, ou dont le dossier a disparu, déclenche un avertissement dans la réponse. Aucun contenu des messages, jeton ou chemin privé n'est transmis.
 
 ## Sauvegardes quotidiennes et restauration
+
+Pour PostgreSQL, utiliser la procédure « Sauvegardes PostgreSQL et restauration » en début de document. Les commandes de restauration de fichiers SQLite ci-dessous concernent les archives antérieures à la migration.
 
 Le timer `maxxie-backup.timer` lance une sauvegarde quotidienne vers **03 h 30, heure de Paris**, avec un décalage aléatoire de dix minutes au maximum. `Persistent=true` rattrape un déclenchement manqué après un arrêt du VPS. Les deux bases sont copiées avec l'API SQLite, y compris leurs données WAL, puis contrôlées avec `quick_check` et SHA-256. Chaque sauvegarde est réellement restaurée dans un dossier temporaire avant validation.
 
@@ -246,6 +274,7 @@ Pour utiliser une archive locale en restauration, la déchiffrer d'abord avec `o
 ## Tests
 
 ```bash
+python3 -m pip install -r requirements-database.txt -r requirements-covers.txt
 python3 -m unittest discover -s tests -v
 ```
 
@@ -354,7 +383,7 @@ Références : [MusicBrainz Search](https://musicbrainz.org/doc/MusicBrainz_API/
 
 Le bouton **Accueil 🏠**, entre Contact et Aide, réaffiche le menu principal en privé.
 
-Le bouton **Hasard 🎲**, `/hasard` et « Encore au hasard » affichent la jaquette disponible en base avec le nom du morceau, le lien d’écoute et le bouton suivant. Si aucune jaquette correspondant au morceau n’est encore enregistrée, le résultat reste textuel. L’image est téléversée directement depuis la base, sans fichier temporaire sur le VPS. Le journal conserve le morceau et la jaquette choisis pendant une reprise afin de ne pas changer le résultat après un refus temporaire Telegram.
+Le bouton **Hasard 🎲**, `/hasard` et « Encore au hasard » recherchent d’abord une jaquette sur internet. Si la recherche échoue, ils utilisent la pochette intégrée au MP3, puis sa miniature Telegram si nécessaire. Sans image exploitable, le résultat reste textuel. Le nom du morceau, le lien d’écoute et les boutons de navigation sont conservés. Le journal conserve le morceau et la jaquette choisis pendant une reprise afin de ne pas changer le résultat après un refus temporaire Telegram.
 
 
 ### Remplacement complet des anciennes jaquettes
@@ -378,3 +407,10 @@ Dans Hasard, le bouton **Menu 🏠**, placé sous les boutons d’écoute et de 
 La présentation **432 Hertz ?** (bouton ou `/432hz`) propose sous son texte le menu complet de l’accueil, avec les mêmes boutons sur quatre lignes.
 
 La fenêtre **Lire les règles** (bouton, `/regles` ou `/start rules`) affiche sous le règlement le menu complet de l’accueil, avec la même disposition sur quatre lignes.
+
+
+### Jaquette du tirage Hasard : internet, puis MP3
+
+Chaque nouveau tirage tente une recherche MusicBrainz/Cover Art Archive (en ignorant `[432Hz]`). Une image trouvée en ligne est téléchargée et privilégiée, même si une image existe déjà en base. En cas d’absence, de délai ou d’indisponibilité du service, le bot télécharge temporairement le MP3 pour extraire son image ID3 APIC, en privilégiant la face avant. Il peut également utiliser la miniature associée au MP3 dans Telegram, notamment lorsque le fichier dépasse la limite de téléchargement du Bot API. Les recherches internet sont sérialisées dans le bot et disposent d’un délai de recherche court pour permettre ce repli.
+
+Le JPEG retenu est compressé et enregistré dans `music_artwork` ; le MP3 temporaire est supprimé dans tous les cas. Les références des fichiers nouvellement indexés sont conservées dans `music_media` (métadonnées uniquement). Pour les anciennes entrées sans référence à jour, une référence déjà connue du service de pochettes est utilisée, ou récupérée par un transfert privé temporaire silencieux au propriétaire, ensuite supprimé. Cette action Hasard ne modifie pas le MP3 du canal. Le service de traitement des pochettes reste indépendant. Les dépendances Mutagen et Pillow doivent également être installées pour le bot.

@@ -1,4 +1,4 @@
-"""Catalogue des MP3 du groupe, conservé dans la base SQLite des tâches."""
+"""Catalogue musical conservé dans la base de données du bot."""
 import json
 import re
 import secrets
@@ -89,6 +89,11 @@ def index_music(store, group_id, message, message_id=None):
                          'artist=excluded.artist,artist_key=excluded.artist_key,file_unique_id=excluded.file_unique_id,'
                          'track_key=excluded.track_key,file_name_key=excluded.file_name_key',
                          (str(group_id), message_id, *metadata, *artist_metadata(message), *duplicate_metadata(message)))
+        media = message.get('audio') or message.get('document', {})
+        if media.get('file_id'):
+            source = {key: message[key] for key in ('audio', 'document') if key in message}
+            store.db.execute('INSERT INTO music_media VALUES (?,?,?,?) ON CONFLICT(group_id,message_id) DO UPDATE SET data=excluded.data,updated=excluded.updated',
+                             (str(group_id), message_id, json.dumps(source), time.time()))
     return True
 
 

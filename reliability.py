@@ -1,4 +1,4 @@
-"""File SQLite et journal des actions Telegram, partagés entre les threads."""
+"""File persistante PostgreSQL et journal Telegram partagés entre les threads."""
 import hashlib
 import json
 import logging
@@ -8,6 +8,7 @@ import time
 import fcntl
 
 from catalogue import normalize, track_identity
+from database import connect, is_postgres
 
 LOG = logging.getLogger("maxxie")
 READ_METHODS = {"getMe", "getChat", "getChatMember", "getWebhookInfo", "getUpdates"}
@@ -33,14 +34,16 @@ class TaskStore:
         self.owner_user_id = owner_user_id
         self.media_limit = media_limit
         self.trusted_media_ids = frozenset(trusted_media_ids)
-        if str(path) != ":memory:":
+        if str(path) != ":memory:" and not is_postgres(path):
             self.instance_lock = open(str(path) + ".lock", "a", encoding="utf-8")
             try:
                 fcntl.flock(self.instance_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 self.instance_lock.close()
                 raise RuntimeError("Une autre instance utilise déjà cette base de tâches.") from None
-        self.db = sqlite3.connect(path, check_same_thread=False, timeout=10)
+        self.db = connect(path, check_same_thread=False, timeout=10)
+        if is_postgres(path):
+            self.db.exclusive("maxxie:bot")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
@@ -50,6 +53,9 @@ class TaskStore:
             CREATE TABLE IF NOT EXISTS music (
                 group_id TEXT NOT NULL, message_id INTEGER NOT NULL, label TEXT NOT NULL,
                 searchable TEXT NOT NULL, PRIMARY KEY(group_id,message_id));
+            CREATE TABLE IF NOT EXISTS music_media (
+                group_id TEXT, message_id INTEGER, data TEXT NOT NULL, updated REAL NOT NULL,
+                PRIMARY KEY(group_id,message_id));
             CREATE TABLE IF NOT EXISTS music_artwork (
                 group_id TEXT, message_id INTEGER, track_key TEXT NOT NULL, jpeg BLOB NOT NULL,
                 source_url TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(group_id,message_id));
@@ -184,14 +190,14 @@ class TaskStore:
                             if not limited:
                                 self.db.execute(f"UPDATE {table} SET count=count+1 WHERE user_id=?", (user_id,))
                         else:
-                            self.db.execute(f"INSERT OR REPLACE INTO {table} VALUES (?,?,1)", (user_id, now))
+                            self.db.execute(f"INSERT INTO {table}(user_id,started,count) VALUES (?,?,1) ON CONFLICT(user_id) DO UPDATE SET started=excluded.started,count=1", (user_id, now))
                 if limited:
                     offset = max(offset, update["update_id"] + 1)
                     continue
                 self.db.execute("INSERT OR IGNORE INTO tasks(update_id,kind,payload,lane,updated) VALUES (?,?,?,?,?)",
                                 (update["update_id"], "update", json.dumps(update), 0, time.time()))
                 offset = max(offset, update["update_id"] + 1)
-            self.db.execute("INSERT OR REPLACE INTO metadata VALUES ('offset',?)", (offset,))
+            self.db.execute("INSERT INTO metadata VALUES ('offset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (offset,))
 
     def submit(self, function, user):
         kind = function.__name__

@@ -119,4 +119,4 @@ class ResponsivenessTests(unittest.TestCase):
         bot = Bot(api, "MaxxieBot", "-10042", "url", "Règles")
         bot.handle({"callback_query": {"id": "old", "data": "rules", "message": {
             "chat": {"id": 7, "type": "private"}}}})
-        api.call.assert_called_with("sendMessage", chat_id=7, text="Règles")
+        api.call.assert_called_with("sendMessage", chat_id=7, text="Règles", reply_markup=bot.main_menu())

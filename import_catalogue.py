@@ -4,6 +4,7 @@ from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+from database import connect, is_postgres
 
 from catalogue import artist_metadata, duplicate_metadata, music_metadata
 
@@ -45,12 +46,11 @@ def export_rows(data, group_id):
 
 def import_export(source, database, group_id):
     rows = export_rows(json.loads(Path(source).read_text(encoding='utf-8')), group_id)
-    with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=rw', uri=True, timeout=30)) as db, db:
+    with closing(connect(database if is_postgres(database) else Path(database).resolve().as_uri() + '?mode=rw', uri=True, timeout=30)) as db, db:
         # Ne pas ouvrir TaskStore : le bot reste seul propriétaire de sa file.
         db.execute('BEGIN IMMEDIATE')
-        before = db.total_changes
-        db.executemany('INSERT OR IGNORE INTO music(group_id,message_id,label,searchable,artist,artist_key,file_unique_id,track_key,file_name_key) VALUES (?,?,?,?,?,?,?,?,?)', rows)
-        added = db.total_changes - before
+        inserted = db.executemany('INSERT OR IGNORE INTO music(group_id,message_id,label,searchable,artist,artist_key,file_unique_id,track_key,file_name_key) VALUES (?,?,?,?,?,?,?,?,?)', rows)
+        added = inserted.rowcount
         # Compléter les anciens catalogues sans remplacer les artistes renseignés depuis.
         db.executemany("UPDATE music SET artist=?,artist_key=? WHERE group_id=? AND message_id=? AND artist='' AND ?<>''",
                        [(row[4], row[5], row[0], row[1], row[4]) for row in rows])
@@ -63,7 +63,7 @@ def import_export(source, database, group_id):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('export', type=Path)
-    parser.add_argument('--database', required=True, type=Path)
+    parser.add_argument('--database', required=True)
     parser.add_argument('--group-id', required=True)
     args = parser.parse_args()
     print(json.dumps(import_export(args.export, args.database, args.group_id), ensure_ascii=False))

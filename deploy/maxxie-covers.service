@@ -1,7 +1,9 @@
 [Unit]
 Description=Pochettes automatiques des MP3 du canal Maxxie
-After=network-online.target maxxie-bot.service
+After=network-online.target maxxie-bot.service postgresql.service
 Wants=network-online.target
+
+Wants=postgresql.service
 
 [Service]
 Type=oneshot

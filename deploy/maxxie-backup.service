@@ -1,6 +1,8 @@
 [Unit]
 Description=Sauvegarde et test de restauration des bases Maxxie
-After=maxxie-bot.service
+After=maxxie-bot.service postgresql.service
+
+Wants=postgresql.service
 
 [Service]
 Type=oneshot

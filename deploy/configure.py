@@ -41,7 +41,8 @@ def main():
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as stream:
         stream.write(f"BOT_TOKEN={token}\nGROUP_ID={group['id']}\n"
-                     f"GROUP_URL={group_url}\nRULES_FILE=/opt/maxxie-bot/rules.txt\n")
+                     f"GROUP_URL={group_url}\nRULES_FILE=/opt/maxxie-bot/rules.txt\n"
+                     "DATABASE_URL=postgresql:///maxxie_bot?host=/var/run/postgresql\n")
     print("Configuration enregistrée. Vérifiez le règlement avant de démarrer le service.")
 
 
