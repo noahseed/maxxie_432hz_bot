@@ -1,0 +1,22 @@
+[Unit]
+Description=Pochettes automatiques des MP3 du canal Maxxie
+After=network-online.target maxxie-bot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=maxxie-bot
+Group=maxxie-bot
+WorkingDirectory=/opt/maxxie-bot
+EnvironmentFile=/etc/maxxie-bot.env
+ExecStart=/usr/bin/python3 /opt/maxxie-bot/covers.py
+TimeoutStartSec=infinity
+TimeoutStopSec=300
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=maxxie-bot
+StateDirectoryMode=0700
+UMask=0077
+Nice=10

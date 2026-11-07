@@ -1,0 +1,10 @@
+[Unit]
+Description=Compléter automatiquement les pochettes du canal chaque jour
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Europe/Paris
+Persistent=true
+OnUnitInactiveSec=30min
+
+[Install]
+WantedBy=timers.target

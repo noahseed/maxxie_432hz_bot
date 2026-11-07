@@ -69,20 +69,20 @@ class WelcomeTests(unittest.TestCase):
         self.api = Mock()
         self.bot = Bot(self.api, "MaxxieBot", "-10042", "https://t.me/Maxxie_432Hz", "Règlement")
 
-    def test_private_start_gets_seven_buttons_with_artists_and_random_side_by_side(self):
+    def test_private_start_gets_eight_buttons_with_artists_and_random_side_by_side(self):
         self.bot.handle({"message": {"chat": {"id": 7, "type": "private"}, "text": "/start"}})
         args = self.api.call.call_args.kwargs
         self.assertNotIn("Règlement", args["text"])
         self.assertEqual(args["chat_id"], 7)
         keyboard = args["reply_markup"]["inline_keyboard"]
-        self.assertEqual(sum(len(row) for row in keyboard), 7)
+        self.assertEqual(sum(len(row) for row in keyboard), 8)
         self.assertEqual([b["callback_data"] for b in keyboard[0]], ["about432", "rules"])
         self.assertEqual(keyboard[0][0]["text"], "432 Hertz ? 🎼")
-        self.assertEqual([b["callback_data"] for b in keyboard[3]], ["contact", "help"])
+        self.assertEqual([b["callback_data"] for b in keyboard[3]], ["contact", "home", "help"])
         self.assertEqual(keyboard[1][0]["url"], "https://t.me/Maxxie_432Hz")
         self.assertEqual([button["text"] for button in keyboard[2]], ["Artistes 🎶", "Hasard 🎲"])
         self.assertEqual([button["callback_data"] for button in keyboard[2]], ["artists", "random"])
-        self.assertEqual([len(row) for row in keyboard], [2, 1, 2, 2])
+        self.assertEqual([len(row) for row in keyboard], [2, 1, 2, 3])
 
     def test_432_button_displays_explanation_only_in_private(self):
         self.bot.handle({"callback_query": {"id": "432", "data": "about432", "from": {"id": 7},
@@ -139,6 +139,8 @@ class WelcomeTests(unittest.TestCase):
         self.assertEqual(self.api.call.call_args.kwargs["chat_id"], 7)
         self.assertIn("/recherche", self.api.call.call_args.kwargs["text"])
         self.assertNotIn("/statut", self.api.call.call_args.kwargs["text"])
+        self.assertEqual(self.api.call.call_args.kwargs["reply_markup"]["inline_keyboard"],
+                         self.bot.main_menu()["inline_keyboard"])
         self.api.reset_mock()
         self.bot.handle({"callback_query": {"id": "help-group", "data": "help", "from": {"id": 7},
                         "message": {"chat": {"id": -10042, "type": "supergroup"}}}})
@@ -148,7 +150,8 @@ class WelcomeTests(unittest.TestCase):
         self.bot.handle({"callback_query": {"id": "abc", "data": "rules",
                                             "message": {"chat": {"id": 7, "type": "private"}}}})
         self.assertEqual(self.api.call.call_args_list[0].args, ("answerCallbackQuery",))
-        self.api.call.assert_called_with("sendMessage", chat_id=7, text="Règlement")
+        self.api.call.assert_called_with("sendMessage", chat_id=7, text="Règlement",
+                                         reply_markup=self.bot.main_menu())
 
     def test_rules_callback_in_group_does_not_publish_rules(self):
         self.bot.handle({"callback_query": {"id": "abc", "data": "rules",
@@ -157,7 +160,8 @@ class WelcomeTests(unittest.TestCase):
 
     def test_group_deep_link_opens_rules_directly(self):
         self.bot.handle({"message": {"chat": {"id": 7, "type": "private"}, "text": "/start rules"}})
-        self.api.call.assert_called_once_with("sendMessage", chat_id=7, text="Règlement")
+        self.api.call.assert_called_once_with("sendMessage", chat_id=7, text="Règlement",
+                                         reply_markup=self.bot.main_menu())
 
     def test_new_member_gets_welcome_in_private_only(self):
         self.bot.handle({"message": {"chat": {"id": -10042, "type": "supergroup"},

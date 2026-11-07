@@ -1,5 +1,7 @@
 """Bot d'accueil Maxxie 432Hz — Python 3.11+, sans dépendances externes."""
 import json
+import base64
+import secrets
 import logging
 import os
 import sqlite3
@@ -54,6 +56,27 @@ def connect_ipv4(address, timeout, source_address=None):
     raise last_error or OSError("Aucune adresse IPv4 disponible")
 
 
+def telegram_body(method, params):
+    """JPEG en mémoire, sérialisable dans le journal, puis multipart pour Telegram."""
+    photo = params.get("photo")
+    if method != "sendPhoto" or not isinstance(photo, dict):
+        return json.dumps(params).encode(), {"Content-Type": "application/json"}
+    jpeg = base64.b64decode(photo["jpeg_base64"], validate=True)
+    if not jpeg or len(jpeg) > 500_000:
+        raise ValueError("Jaquette JPEG invalide")
+    boundary = secrets.token_hex(16)
+    body = bytearray()
+    for key, value in params.items():
+        if key == "photo":
+            continue
+        encoded = value if isinstance(value, str) else json.dumps(value)
+        body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{encoded}\r\n'.encode())
+    body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="cover.jpg"\r\nContent-Type: image/jpeg\r\n\r\n'.encode())
+    body.extend(jpeg)
+    body.extend(f'\r\n--{boundary}--\r\n'.encode())
+    return bytes(body), {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+
+
 class Telegram:
     def __init__(self, token, ipv4_only=True):
         self.path = f"/bot{token}/"
@@ -84,8 +107,8 @@ class Telegram:
                 if connection.sock is None:
                     connection.connect()
                 connection.sock.settimeout(read_timeout)
-                connection.request("POST", self.path + method, json.dumps(params).encode(),
-                                   {"Content-Type": "application/json"})
+                body, headers = telegram_body(method, params)
+                connection.request("POST", self.path + method, body, headers)
                 response = connection.getresponse()
                 body = response.read()
                 self.local.last_used = time.monotonic()
@@ -131,6 +154,7 @@ class Bot:
         self.background = None
         self.owner_user_id = owner_user_id
         self.backup_dir = Path(backup_dir) if backup_dir else None
+        self.ai = None
 
     def action(self, step, method, **params):
         if isinstance(self.api, JournalAPI):
@@ -168,6 +192,19 @@ class Bot:
                 lines.append("État de sauvegarde illisible.")
         else:
             lines.append("Aucune sauvegarde vérifiée disponible.")
+        try:
+            from covers import progress_snapshot
+            progress = progress_snapshot(os.environ.get("COVERS_DIR", "/var/lib/maxxie-bot/covers"), self.group_id)
+            if progress is not None:
+                with self.background.lock:
+                    total = self.background.db.execute("SELECT count(*) FROM music WHERE group_id=?", (self.group_id,)).fetchone()[0]
+                examined = sum(progress.get(status, 0) for status in ("done", "skipped", "failed", "exhausted", "uncertain"))
+                lines.extend([f"Jaquettes : {examined}/{total} morceaux examinés",
+                              f"Remplacées : {progress.get('done', 0)} ; introuvables/non traitables : {progress.get('skipped', 0)}",
+                              f"Erreurs à retenter : {progress.get('failed', 0)} ; échecs après 3 tentatives : {progress.get('exhausted', 0)}",
+                              f"Pochettes incertaines (sans relance) : {progress.get('uncertain', 0)}"])
+        except (OSError, sqlite3.Error):
+            lines.append("Progression des jaquettes momentanément indisponible.")
         self.action("status", "sendMessage", chat_id=chat_id, text="\n".join(lines))
 
     def later(self, function, user):
@@ -242,18 +279,26 @@ class Bot:
                       can_manage_topics=False, is_anonymous=False)
         LOG.info("Compte autorisé promu administrateur : %s", user_id)
 
+    @staticmethod
+    def navigation_row():
+        return [{"text": "Contact ✉️", "callback_data": "contact"},
+                {"text": "Accueil 🏠", "callback_data": "home"},
+                {"text": "Aide ❓", "callback_data": "help"}]
+
+    def main_menu(self):
+        return {"inline_keyboard": [
+            [{"text": "432 Hertz ? 🎼", "callback_data": "about432"},
+             {"text": f"Lire les règles du {self.destination_label} 📜", "callback_data": "rules"}],
+            [{"text": f"Rejoindre le {self.destination_label} 🎵", "url": self.group_url}],
+            [{"text": "Artistes 🎶", "callback_data": "artists"},
+             {"text": "Hasard 🎲", "callback_data": "random"}],
+            self.navigation_row()
+        ]}
+
     def private_welcome(self, chat_id):
         self.action(f"welcome:{chat_id}", "sendMessage", chat_id=chat_id,
-                      text=self.welcome,
-                      reply_markup={"inline_keyboard": [
-                          [{"text": "432 Hertz ? 🎼", "callback_data": "about432"},
-                           {"text": f"Lire les règles du {self.destination_label} 📜", "callback_data": "rules"}],
-                          [{"text": f"Rejoindre le {self.destination_label} 🎵", "url": self.group_url}],
-                          [{"text": "Artistes 🎶", "callback_data": "artists"},
-                           {"text": "Hasard 🎲", "callback_data": "random"}],
-                          [{"text": "Contact ✉️", "callback_data": "contact"},
-                           {"text": "Aide ❓", "callback_data": "help"}]
-                      ]})
+                    text=self.welcome + ("\n\n🤖 Un assistant IA peut répondre à vos messages privés. Votre texte et, si nécessaire, les résultats du catalogue seront transmis à OpenAI. Pour joindre le propriétaire, utilisez Contact." if self.ai else ""),
+                    reply_markup=self.main_menu())
 
     def show_contact(self, chat_id):
         if not self.owner_user_id or not isinstance(self.background, TaskStore):
@@ -298,16 +343,59 @@ class Bot:
                     text="Votre message a été transféré au propriétaire ✅")
         return True
 
+    def answer_private(self, message):
+        if not self.ai or not isinstance(self.background, TaskStore):
+            return
+        text = message.get("text", "").strip()
+        if not text or message.get("from", {}).get("is_bot"):
+            return
+        if len(text) > 4000:
+            self.action("ai-too-long", "sendMessage", chat_id=message["chat"]["id"],
+                        text="Pour l’assistant IA, limitez votre message à 4 000 caractères.")
+            return
+        chat_id, message_id = message["chat"]["id"], message["message_id"]
+        day = datetime.now(timezone.utc).date().isoformat()
+        store = self.background
+        with store.lock, store.db:
+            row = store.db.execute("SELECT answer FROM ai_replies WHERE chat_id=? AND message_id=?",
+                                   (chat_id, message_id)).fetchone()
+            if row is None:
+                personal = store.db.execute("SELECT count(*) FROM ai_replies WHERE chat_id=? AND day=?",
+                                            (chat_id, day)).fetchone()[0]
+                total = store.db.execute("SELECT count(*) FROM ai_replies WHERE day=?", (day,)).fetchone()[0]
+                if personal >= 20 or total >= 200:
+                    answer = "La limite quotidienne de l’assistant IA est atteinte. Réessayez demain."
+                else:
+                    # Reserve before the paid request. An interrupted request is never repeated.
+                    store.db.execute("INSERT INTO ai_replies VALUES (?,?,?,?,?)",
+                                     (chat_id, message_id, day, None, time.time()))
+                    answer = None
+            else:
+                answer = row[0] or "La réponse IA a été interrompue. Vous pouvez envoyer une nouvelle question."
+        if answer is None:
+            from openai_chat import OpenAIError
+            try:
+                from ai_catalogue import CatalogueReader
+                answer = self.ai.answer(text, catalogue=CatalogueReader(store, self.group_id, self.group_url))
+            except OpenAIError as error:
+                answer = str(error)
+            with store.lock, store.db:
+                store.db.execute("UPDATE ai_replies SET answer=? WHERE chat_id=? AND message_id=?",
+                                 (answer, chat_id, message_id))
+        self.action("ai-reply", "sendMessage", chat_id=chat_id, text=answer)
+
     def show_432(self, chat_id):
         self.action("about432", "sendMessage", chat_id=chat_id,
                     text="432 Hertz ? 🎶\n\n"
                          "Accorder une musique en 432 Hz, c’est choisir un la de référence à 432 Hz plutôt qu’à 440 Hz : les notes sont légèrement plus graves.\n\n"
                          "Certaines personnes apprécient cette couleur sonore pour se détendre, se recentrer ou accompagner un moment de calme. Le plaisir d’écoute et le ressenti restent personnels.\n\n"
                          "Les études sont encore limitées : aucun bienfait thérapeutique propre au 432 Hz n’est solidement établi.\n\n"
-                         "Installez-vous confortablement, gardez un volume doux et laissez la musique vous accompagner 🌿")
+                         "Installez-vous confortablement, gardez un volume doux et laissez la musique vous accompagner 🌿",
+                    reply_markup=self.main_menu())
 
     def show_rules(self, chat_id):
-        self.action(f"rules:{chat_id}", "sendMessage", chat_id=chat_id, text=self.rules)
+        self.action(f"rules:{chat_id}", "sendMessage", chat_id=chat_id, text=self.rules,
+                    reply_markup=self.main_menu())
 
     def show_help(self, chat_id, user_id):
         lines = ["Aide — Maxxie 432Hz 🎵", "",
@@ -321,6 +409,8 @@ class Bot:
                  "/aide — afficher cette aide", "/id — votre identifiant Telegram", "",
                  f"Le catalogue contient les morceaux enregistrés par le bot, pas tout l’historique du {self.destination_label}.",
                  "Pour écrire au propriétaire : bouton Contact dans /start, puis répondez à l’invitation du bot."]
+        if self.ai:
+            lines.extend(["", "🤖 Assistant IA : écrivez un message privé pour obtenir une réponse générée par OpenAI. Votre texte et les résultats du catalogue consultés sont transmis à OpenAI, sans historique de conversation. Vous pouvez demander un artiste, un titre ou un morceau au hasard. Limite : 20 demandes par jour et par visiteur, 200 au total (jour UTC)."] )
         admin = user_id == self.owner_user_id and bool(self.owner_user_id)
         if user_id and not admin:
             try:
@@ -337,7 +427,8 @@ class Bot:
         if user_id == self.owner_user_id and self.owner_user_id:
             lines.append("/statut — état du bot et des sauvegardes (propriétaire uniquement)")
             lines.append("/update — vérifier les mises à jour du VPS (propriétaire uniquement)")
-        self.action("help", "sendMessage", chat_id=chat_id, text="\n".join(lines))
+        self.action("help", "sendMessage", chat_id=chat_id, text="\n".join(lines),
+                    reply_markup=self.main_menu())
 
     def find_music(self, chat_id, query):
         query = query.strip()
@@ -405,6 +496,13 @@ class Bot:
         self.action("search" if kind == "search" else "browse", "sendMessage", **params)
 
     def show_random(self, chat_id):
+        if isinstance(self.api, JournalAPI):
+            saved = self.api.saved_request("random")
+            if saved:
+                method, params = saved
+                self.action("random", method, **params)
+                return
+        method = "sendMessage"
         song = random_music(self.background, self.group_id) if isinstance(self.background, TaskStore) else None
         params = {"chat_id": chat_id, "text": "Aucun morceau disponible dans le catalogue pour le moment."}
         if song:
@@ -416,7 +514,17 @@ class Bot:
                 buttons.append([{"text": f"Écouter dans le {self.destination_label} 🎵", "url": link}])
             buttons.append([{"text": "Encore au hasard 🎲", "callback_data": "random"}])
             params["reply_markup"] = {"inline_keyboard": buttons}
-        self.action("random", "sendMessage", **params)
+            with self.background.lock:
+                artwork = self.background.db.execute(
+                    "SELECT a.jpeg FROM music_artwork a JOIN music m ON m.group_id=a.group_id AND m.message_id=a.message_id AND m.track_key=a.track_key WHERE a.group_id=? AND a.message_id=?",
+                    (self.group_id, message_id)).fetchone()
+            if artwork and artwork[0]:
+                params["photo"] = {"jpeg_base64": base64.b64encode(artwork[0]).decode("ascii")}
+                params["caption"] = params.pop("text")
+                method = "sendPhoto"
+        params.setdefault("reply_markup", {"inline_keyboard": []})["inline_keyboard"].append(
+            [{"text": "Menu 🏠", "callback_data": "home"}])
+        self.action("random", method, **params)
 
     def index_published(self, message, copied):
         if (isinstance(self.background, TaskStore) and isinstance(copied, dict)
@@ -588,6 +696,8 @@ class Bot:
                     self.show_rules(chat["id"])
                 elif data == "contact":
                     self.show_contact(chat["id"])
+                elif data == "home":
+                    self.private_welcome(chat["id"])
                 elif data == "help":
                     self.show_help(chat["id"], callback.get("from", {}).get("id", chat["id"]))
                 elif data == "artists":
@@ -674,6 +784,8 @@ class Bot:
                               text=f"Votre identifiant Telegram : {user['id']}")
                 return
             if not start:
+                if not command.startswith("/"):
+                    self.answer_private(message)
                 return
             if parts[1:] == ["rules"]:
                 self.show_rules(chat["id"])
@@ -807,6 +919,8 @@ def main():
                   int(owner_user_id) if owner_user_id else None,
                   os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"), chat_type=chat_type)
         bot.background = store
+        from openai_chat import OpenAIChat
+        bot.ai = OpenAIChat.from_environment()
         def handle_task(kind, payload):
             if kind == "update":
                 bot.handle(payload)

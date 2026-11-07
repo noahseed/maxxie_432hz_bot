@@ -50,6 +50,14 @@ class TaskStore:
             CREATE TABLE IF NOT EXISTS music (
                 group_id TEXT NOT NULL, message_id INTEGER NOT NULL, label TEXT NOT NULL,
                 searchable TEXT NOT NULL, PRIMARY KEY(group_id,message_id));
+            CREATE TABLE IF NOT EXISTS music_artwork (
+                group_id TEXT, message_id INTEGER, track_key TEXT NOT NULL, jpeg BLOB NOT NULL,
+                source_url TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(group_id,message_id));
+            CREATE INDEX IF NOT EXISTS artwork_track ON music_artwork(group_id,track_key);
+            CREATE TABLE IF NOT EXISTS ai_replies (
+                chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, day TEXT NOT NULL,
+                answer TEXT, created REAL NOT NULL, PRIMARY KEY(chat_id,message_id));
+            CREATE INDEX IF NOT EXISTS ai_reply_day ON ai_replies(day);
             CREATE TABLE IF NOT EXISTS contact_prompts (
                 chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, expires REAL NOT NULL,
                 PRIMARY KEY(chat_id,message_id));
@@ -231,6 +239,7 @@ class TaskStore:
         with self.lock, self.db:
             self.db.execute("DELETE FROM duplicate_publications WHERE expires<?", (time.time(),))
             self.db.execute("DELETE FROM browse_sessions WHERE expires<?", (time.time(),))
+            self.db.execute("DELETE FROM ai_replies WHERE created<?", (time.time() - 30 * 86400,))
             self.db.execute("DELETE FROM contact_prompts WHERE expires<?", (time.time(),))
             self.db.execute("DELETE FROM command_limits WHERE started<?", (time.time() - 86400,))
             self.db.execute("DELETE FROM media_limits WHERE started<?", (time.time() - 86400,))
@@ -281,6 +290,16 @@ class JournalAPI:
             raise RuntimeError("Action hors d'une tâche persistante")
         fingerprint, method, params = self.store.prepare_request(task_id, step, method, params)
         return self._execute(task_id, fingerprint, method, params)
+
+    def saved_request(self, step):
+        task_id = getattr(self.local, "task_id", None)
+        if task_id is None:
+            raise RuntimeError("Action hors d’une tâche persistante")
+        fingerprint = hashlib.sha256(("step:" + step).encode()).hexdigest()
+        with self.store.lock:
+            row = self.store.db.execute("SELECT request FROM actions WHERE task_id=? AND fingerprint=?",
+                                        (task_id, fingerprint)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
 
     def completed(self, step, method, **params):
         task_id = getattr(self.local, "task_id", None)

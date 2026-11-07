@@ -4,8 +4,8 @@ Bot léger en Python (bibliothèque standard uniquement), prévu pour Debian 13.
 
 ## Fonctionnement
 
-- La commande privée `/start` affiche l'accueil avec sept boutons sur quatre lignes : « 432 Hertz ? 🎼 » et « Lire les règles du groupe » côte à côte, « Rejoindre le groupe », puis « Artistes » et « Hasard » côte à côte, et enfin « Contact » et « Aide » côte à côte. Les boutons Artistes et Hasard ouvrent les mêmes fonctions que `/artistes` et `/hasard` en privé. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
-- L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les sept boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
+- La commande privée `/start` affiche l'accueil avec huit boutons sur quatre lignes : « 432 Hertz ? 🎼 » et « Lire les règles du groupe » côte à côte, « Rejoindre le groupe », puis « Artistes » et « Hasard » côte à côte, et enfin « Contact », « Accueil » et « Aide » côte à côte. Les boutons Artistes et Hasard ouvrent les mêmes fonctions que `/artistes` et `/hasard` en privé. Les commandes inconnues et les messages ordinaires restent sans réponse. `/aide`, `/recherche`, `/artistes`, `/hasard`, `/id`, `/statut` et la publication des MP3 gardent leur fonctionnement dédié.
+- L'arrivée d'un membre dans le groupe configuré déclenche une tentative d'accueil en privé, avec les huit boutons. Telegram accepte l'envoi si le membre a déjà contacté le bot et ne l'a pas bloqué. Sinon, le bot reste silencieux. Aucun accueil n'est publié dans le groupe.
 - Le règlement reste en privé. Les messages ordinaires du groupe sont ignorés.
 - Le lien du groupe est accessible à toute personne contactant le bot. Il ne s'agit pas d'un contrôle d'admission ni d'une obligation d'accepter les règles.
 
@@ -173,7 +173,7 @@ Au démarrage, une panne réseau ou Telegram entraîne une nouvelle tentative av
 
 ## Stockage, accueil et diagnostic
 
-`WELCOME_FILE` pointe vers `welcome.txt`, qui contient le texte du menu d'accueil. Modifier ce fichier puis redémarrer le service ; les sept boutons sont conservés. Ne pas écraser un fichier personnalisé lors d'une mise à jour.
+`WELCOME_FILE` pointe vers `welcome.txt`, qui contient le texte du menu d'accueil. Modifier ce fichier puis redémarrer le service ; les huit boutons sont conservés. Ne pas écraser un fichier personnalisé lors d'une mise à jour.
 
 Les événements en attente peuvent contenir le texte privé, le nom affiché, le pseudonyme et les références des fichiers Telegram. Les MP3 eux-mêmes ne sont jamais téléchargés. Le dossier `/var/lib/maxxie-bot` est réservé au compte du service ; les fichiers SQLite ne sont pas versionnés dans Git. Les données des tâches terminées ou abandonnées sont effacées, puis leurs métadonnées et empreintes d'actions sont nettoyées après 30 jours. Une tâche en attente peut conserver ses données pendant une longue indisponibilité. Sauvegarder les bases avec l'API de sauvegarde SQLite ou après arrêt du service, en tenant compte des fichiers WAL ; ne pas copier seulement le fichier principal pendant son utilisation.
 
@@ -251,7 +251,7 @@ python3 -m unittest discover -s tests -v
 
 GitHub Actions exécute automatiquement ces tests sur Python 3.11 et 3.13 à chaque push et pull request. Les tests simulent les erreurs 429, coupures réseau, interruptions pendant les envois, redémarrages et une file de plus de 128 tâches, sans contacter Telegram.
 
-Après installation : contacter le bot en privé, vérifier les sept boutons ; faire rejoindre ce compte au groupe et vérifier la réception de l'accueil en privé, sans publication du bot dans le groupe. Un membre n'ayant jamais ouvert le bot ou l'ayant bloqué ne doit pas recevoir d'accueil. Vérifier aussi que le bot reste silencieux pendant une conversation ordinaire.
+Après installation : contacter le bot en privé, vérifier les huit boutons ; faire rejoindre ce compte au groupe et vérifier la réception de l'accueil en privé, sans publication du bot dans le groupe. Un membre n'ayant jamais ouvert le bot ou l'ayant bloqué ne doit pas recevoir d'accueil. Vérifier aussi que le bot reste silencieux pendant une conversation ordinaire.
 
 Les sauvegardes du VPS sont verrouillées pendant la création, la rotation et le chiffrement pour éviter les exécutions simultanées. La copie sur l’ordinateur refuse une archive de plus de 36 heures (ou datée de plus de cinq minutes dans le futur) ; le service signale alors un échec sans remplacer les copies locales existantes.
 
@@ -298,3 +298,83 @@ Les invitations ne stockent que l’identifiant privé, la référence du messag
 Le bouton **432 Hertz ? 🎼**, à gauche des règles dans `/start`, affiche en privé un court texte expliquant le la de référence à 432 Hz, les ressentis possibles de détente et les limites des connaissances actuelles. Le texte privilégie le plaisir d’écoute sans promesse thérapeutique. Repères : [étude pilote de 2019](https://pubmed.ncbi.nlm.nih.gov/31031095/) et [essai pilote de 2022](https://pmc.ncbi.nlm.nih.gov/articles/PMC9534204/), dont les auteurs demandent des études supplémentaires.
 
 Les commandes privées `/432hz` et `/regles`, affichées dans l’aide de tous les visiteurs, ouvrent respectivement le texte de présentation du 432 Hz et les règles du groupe. Elles acceptent aussi la forme adressée au bot (`/432hz@Maxxie_432Hz_Bot`, `/regles@Maxxie_432Hz_Bot`).
+
+## Assistant OpenAI en privé
+
+Lorsque `OPENAI_API_KEY` et `OPENAI_MODEL` sont configurés, le bot répond automatiquement aux textes privés ordinaires via l’API Responses. Les commandes et les réponses à une invitation Contact restent prioritaires ; aucun message du canal ou d’un groupe n’est transmis. Les pièces jointes ne sont pas analysées. L’accueil et l’aide annoncent l’utilisation d’OpenAI ; les réponses portent la mention « Réponse IA ».
+
+L’assistant reçoit le texte du message courant, ses instructions et, à sa demande, les résultats de lecture du catalogue du canal configuré. Il n’a pas d’historique entre deux messages ni de fonction de modification ou de commande système. La requête utilise `store=false`. Chaque appel est limité à 1 600 tokens de sortie ; la réponse Telegram est limitée à 3 800 caractères. Une demande peut effectuer jusqu’à quatre appels API (trois consultations du catalogue puis une réponse), comptés comme une seule demande dans le quota quotidien. Les messages dépassant 4 000 caractères sont refusés. Les réservations SQLite limitent les appels à 20 par utilisateur et 200 au total par jour UTC, y compris pour le propriétaire. Ce sont des limites de requêtes, pas un plafond financier. Les réponses sont conservées 30 jours pour éviter de refaire un appel payant lors d’une reprise Telegram ; après une interruption incertaine, l’appel n’est pas relancé. Les données restent aussi soumises à la rétention habituelle des tâches et des sauvegardes.
+
+Installation : copier `openai_chat.py`, `ai_catalogue.py` et la version actuelle de `bot.py` et `reliability.py` dans `/opt/maxxie-bot` avec propriétaire root, puis installer `deploy/configure_openai.py` au même endroit. Sur le VPS :
+
+```bash
+sudo python3 /opt/maxxie-bot/configure_openai.py
+sudo systemctl restart maxxie-bot
+```
+
+L’assistant demande la clé API en saisie masquée et l’identifiant exact d’un modèle accessible à votre projet OpenAI. Il met à jour `/etc/maxxie-bot.env` sans afficher la clé, avec permissions 600. Ne pas envoyer la clé dans Telegram ou la publier dans Git. Si la clé ou le modèle manque, les fonctions existantes continuent sans réponse IA. Après activation, tester une question en privé au bot ; un refus API ou une indisponibilité produit un message générique sans exposer la clé ni le corps d’erreur.
+
+Documentation : [démarrage OpenAI](https://developers.openai.com/api/docs/quickstart) et [authentification serveur](https://developers.openai.com/api/reference/overview).
+
+
+### Recherche du catalogue par l’IA
+
+L’outil `catalogue`, en lecture seule, permet à l’IA de rechercher par artiste/titre, de parcourir les artistes par pages de dix, de proposer un morceau au hasard et d’obtenir les totaux. Les résultats sont limités au `GROUP_ID` configuré ; aucune requête SQL, destination Telegram ou commande arbitraire ne peut être fournie par le modèle. Seuls les libellés, liens et nombres de résultats nécessaires sont transmis à OpenAI, jamais les fichiers MP3 ni les données des visiteurs. Les recherches utilisent la même normalisation (accents et casse) que `/recherche`.
+
+Exemples de messages privés : « As-tu des morceaux d’Édith Piaf ? », « Quels artistes sont dans le canal ? », « Propose-moi un morceau au hasard », « Combien de morceaux contient le catalogue ? ». Une absence de résultat concerne uniquement les morceaux indexés, pas tout l’historique du canal. Les métadonnées ne permettent pas de vérifier le style, l’humeur ou le contenu audio d’un morceau. Les liens d’un canal privé nécessitent d’y avoir accès. La réponse IA et ses liens sont enregistrés dans le cache habituel pour éviter de relancer les appels lors d’une reprise.
+
+L’intégration suit le [fonctionnement des appels de fonctions dans l’API Responses](https://developers.openai.com/api/docs/guides/function-calling), avec `store=false` et transmission des résultats d’outil dans la même demande.
+
+## Pochettes automatiques des MP3
+
+Le service `maxxie-covers.service` traite automatiquement les morceaux indexés du canal, sans validation manuelle. Son timer s’exécute chaque jour vers **04 h 30, heure de Paris**, et rattrape une échéance manquée. Le traitement initial peut être lancé avec `sudo systemctl start --no-block maxxie-covers.service`. Le bot doit disposer du droit de modifier les messages et le propriétaire doit avoir démarré sa conversation privée.
+
+Pour chaque artiste/titre identifié, MusicBrainz fournit les correspondances et Cover Art Archive une pochette de face vérifiée. Les correspondances multiples ou insuffisantes sont ignorées. En l’absence de métadonnée d’album, la pochette retenue est celle d’une édition de l’enregistrement identifié ; l’édition exacte du MP3 ne peut pas être garantie. Aucun fichier audio n’est envoyé à OpenAI pour cette opération. Les recherches sont espacées pour respecter les services externes.
+
+La même image est intégrée au MP3 (champ ID3 APIC) et téléversée en miniature JPEG Telegram. Le fichier est remplacé **dans le message existant**, avec conservation de la légende et de ses entités ; les liens restent donc identiques. Les MP3 envoyés comme documents restent des documents. L’audio n’est pas réencodé : seule la métadonnée de pochette change. Le service vérifie la durée, la fréquence d’échantillonnage et le nombre de canaux après modification.
+
+Le Bot API ne fournit pas de lecture directe d’un ancien message à partir de son identifiant. Le service transfère donc temporairement le message en privé au propriétaire, sans notification, pour obtenir la référence du fichier ; ce transfert est ensuite supprimé. Les contenus protégés, supprimés ou inaccessibles sont ignorés. L’API Telegram hébergée limite le téléchargement à 20 Mo environ : les morceaux qui dépassent cette limite ne peuvent pas être traités par cette méthode.
+
+**Espace disque :** les MP3 et images de travail ne sont conservés que pendant le traitement d’un morceau et supprimés après envoi confirmé. Les fichiers temporaires d’un échec sont également nettoyés ; après un arrêt brutal, les restes sont supprimés au prochain démarrage du service. Le catalogue n’est pas supprimé. La jaquette JPEG compressée (600 px maximum, moins de 500 ko), sa source et l’identité du morceau sont stockées dans `music_artwork`, dans `STATE_DB`, et incluses dans les sauvegardes habituelles de cette base. La miniature 320 px est dérivée de la même image. Le dossier de suivi `COVERS_DIR` conserve seulement sa base de progression et les références Telegram nécessaires à la reprise, pas d’archive de MP3.
+
+Un succès est enregistré pour ne pas retraiter le même message. Les échecs temporaires sont retentés lors d’un prochain passage ; trois erreurs de service successives déclenchent une pause de 60 secondes, puis le passage continue avec les morceaux restants. Un résultat d’envoi incertain n’est pas rejoué automatiquement, pour éviter d’écraser une modification concurrente. Le bilan est envoyé en privé au propriétaire ; les notifications non livrées restent dans la file locale. Les morceaux nouvellement indexés sont pris en compte au passage suivant.
+
+Dépendances optionnelles de ce service : `python3-mutagen` et `python3-pil` sur Debian, ou `pip install -r requirements-covers.txt` pour le développement. Le cœur du bot conserve la bibliothèque standard. Installation des unités après copie de `covers.py` dans `/opt/maxxie-bot` :
+
+```bash
+sudo apt-get install --no-install-recommends python3-mutagen python3-pil
+sudo install -o root -g root -m 644 deploy/maxxie-covers.service deploy/maxxie-covers.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now maxxie-covers.timer
+sudo systemctl start --no-block maxxie-covers.service
+sudo journalctl -u maxxie-covers.service -n 20 --no-pager
+```
+
+Références : [MusicBrainz Search](https://musicbrainz.org/doc/MusicBrainz_API/Search), [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API), [miniatures audio Telegram](https://core.telegram.org/bots/api#inputmediaaudio).
+
+Le bouton **Accueil 🏠**, entre Contact et Aide, réaffiche le menu principal en privé.
+
+Le bouton **Hasard 🎲**, `/hasard` et « Encore au hasard » affichent la jaquette disponible en base avec le nom du morceau, le lien d’écoute et le bouton suivant. Si aucune jaquette correspondant au morceau n’est encore enregistrée, le résultat reste textuel. L’image est téléversée directement depuis la base, sans fichier temporaire sur le VPS. Le journal conserve le morceau et la jaquette choisis pendant une reprise afin de ne pas changer le résultat après un refus temporaire Telegram.
+
+
+### Remplacement complet des anciennes jaquettes
+
+La révision `album-aware-no-432-v2` réexamine tous les morceaux du catalogue, même ceux déjà marqués comme traités ou ignorés par l’ancienne méthode. Chaque morceau déclenche une nouvelle recherche internet ; l’ancienne jaquette en base n’est jamais réutilisée pour cette opération. Les mentions `[432Hz]`, `[432 Hz]` et variantes de casse ou entre parenthèses sont retirées de l’artiste, du titre et de l’album de recherche, sans modifier les libellés affichés.
+
+Le service récupère d’abord le MP3, lit ses champs ID3 artiste/titre/album et cherche une édition officielle correspondante. L’album est utilisé s’il est renseigné, et les compilations/live/remix identifiés sont écartés en l’absence d’album. Sans album, l’édition exacte ne peut toujours pas être garantie. La jaquette en base n’est remplacée qu’après confirmation de la modification du MP3 et de sa miniature Telegram ; une recherche infructueuse conserve l’ancienne image. Le traitement est repris automatiquement après 30 minutes en cas d’arrêt de passage, en plus du déclenchement quotidien. Les morceaux réussis avec cette révision ne sont pas refaits à chaque passage.
+
+### Progression et reprises limitées des pochettes
+
+Les morceaux non encore examinés passent avant les erreurs à retenter. Chaque morceau est limité à **trois tentatives par révision de recherche**, avec 30 puis 60 minutes d’attente avant reprise. Après la troisième erreur, il est classé en échec définitif pour cette révision et ne déclenche plus de recherche automatique. Les morceaux réussis ou introuvables ne sont pas refaits. Une interruption avant l’envoi est retentable ; un envoi au résultat incertain reste sans reprise automatique.
+
+Un point privé est envoyé tous les 50 morceaux et le bilan distingue réussites, introuvables, erreurs en attente et erreurs épuisées. La commande propriétaire `/statut` affiche également la progression réelle des jaquettes par rapport au nombre de morceaux du catalogue. Les transferts privés temporaires restent nécessaires pour récupérer chaque MP3 via le Bot API ; ils sont silencieux et supprimés après récupération de la référence.
+
+Une indisponibilité de la source d’images ne laisse plus le reste du catalogue non examiné : après trois erreurs consécutives, le service attend 60 secondes puis poursuit le passage. Les reprises individuelles restent plafonnées à trois tentatives par morceau, avec priorité aux morceaux jamais examinés.
+
+L’aide privée (`/aide` ou bouton Aide) affiche sous son texte le menu complet de l’accueil, avec les mêmes boutons sur quatre lignes.
+
+Dans Hasard, le bouton **Menu 🏠**, placé sous les boutons d’écoute et de nouveau tirage, réaffiche l’accueil. Il est également proposé lorsque le catalogue est vide.
+
+La présentation **432 Hertz ?** (bouton ou `/432hz`) propose sous son texte le menu complet de l’accueil, avec les mêmes boutons sur quatre lignes.
+
+La fenêtre **Lire les règles** (bouton, `/regles` ou `/start rules`) affiche sous le règlement le menu complet de l’accueil, avec la même disposition sur quatre lignes.

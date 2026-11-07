@@ -1,0 +1,3 @@
+# Optional: covers.py only; the Telegram bot core uses the standard library.
+mutagen>=1.47,<2
+Pillow>=11,<14

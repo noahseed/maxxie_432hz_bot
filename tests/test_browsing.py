@@ -1,5 +1,6 @@
 from contextlib import closing
 import json
+import base64
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -138,6 +139,65 @@ class BrowsingTests(unittest.TestCase):
         self.assertEqual(self.result()['reply_markup']['inline_keyboard'][0][0]['url'], 'https://t.me/Maxxie_432Hz/1')
         self.click('random')
         self.assertIn('Édith Piaf', self.result()['text'])
+
+    def test_random_with_cover_sends_photo_caption_and_buttons(self):
+        index_music(self.store, '-10042', self.song(1))
+        key = self.store.db.execute('SELECT track_key FROM music').fetchone()[0]
+        with self.store.db:
+            self.store.db.execute('INSERT INTO music_artwork VALUES (?,?,?,?,?,?)',
+                                  ('-10042', 1, key, b'jpeg-cover', 'https://source', 0))
+        self.click('random')
+        self.assertEqual(self.raw.call.call_args.args[0], 'sendPhoto')
+        self.assertEqual(base64.b64decode(self.result()['photo']['jpeg_base64']), b'jpeg-cover')
+        self.assertIn('Édith Piaf', self.result()['caption'])
+        self.assertEqual(self.result()['reply_markup']['inline_keyboard'][0][0]['url'],
+                         'https://t.me/Maxxie_432Hz/1')
+        self.assertEqual(self.result()['reply_markup']['inline_keyboard'][-2][0]['callback_data'], 'random')
+        self.assertEqual(self.result()['reply_markup']['inline_keyboard'][-1],
+                         [{'text': 'Menu 🏠', 'callback_data': 'home'}])
+
+    def test_random_ignores_artwork_from_other_destination_or_old_metadata(self):
+        index_music(self.store, '-10042', self.song(1))
+        with self.store.db:
+            self.store.db.execute('INSERT INTO music_artwork VALUES (?,?,?,?,?,?)',
+                                  ('-10099', 1, 'other', b'jpeg', 'source', 0))
+            self.store.db.execute('INSERT INTO music_artwork VALUES (?,?,?,?,?,?)',
+                                  ('-10042', 1, 'stale-key', b'jpeg', 'source', 0))
+        self.click('random')
+        self.assertEqual(self.raw.call.call_args.args[0], 'sendMessage')
+        self.assertIn('Édith Piaf', self.result()['text'])
+
+    def test_random_photo_retry_keeps_original_image_even_if_catalogue_changes(self):
+        index_music(self.store, '-10042', self.song(1))
+        key = self.store.db.execute('SELECT track_key FROM music').fetchone()[0]
+        with self.store.db:
+            self.store.db.execute('INSERT INTO music_artwork VALUES (?,?,?,?,?,?)',
+                                  ('-10042', 1, key, b'initial-image', 'source', 0))
+        journal = JournalAPI(self.raw, self.store)
+        self.bot.api = journal
+        self.store.ingest([{'update_id': 1, 'message': {'chat': {'id': 7, 'type': 'private'}, 'text': '/hasard'}}])
+        self.raw.call.side_effect = [TelegramError(429, 1), {}]
+        worker = Worker(self.store, journal, lambda _, u: self.bot.handle(u), 0, threading.Event())
+        worker.process_one()
+        with self.store.db:
+            self.store.db.execute('DELETE FROM music_artwork')
+            self.store.db.execute('DELETE FROM music')
+            self.store.db.execute('UPDATE tasks SET ready=0')
+        worker.process_one()
+        first, second = self.raw.call.call_args_list
+        self.assertEqual(first.args, ('sendPhoto',))
+        self.assertEqual(first, second)
+
+    def test_random_photo_multipart_upload_has_binary_jpeg_and_json_buttons(self):
+        from bot import telegram_body
+        body, headers = telegram_body('sendPhoto', {
+            'chat_id': 7, 'photo': {'jpeg_base64': base64.b64encode(b'jpeg-image').decode()},
+            'caption': 'Titre', 'reply_markup': {'inline_keyboard': [[{'text': 'Encore', 'callback_data': 'random'}]]}})
+        self.assertIn('multipart/form-data', headers['Content-Type'])
+        self.assertIn(b'jpeg-image', body)
+        self.assertIn(b'filename="cover.jpg"', body)
+        self.assertIn(b'"callback_data": "random"', body)
+        self.assertNotIn(b'jpeg_base64', body)
 
     def test_empty_catalogue_and_help_are_clear(self):
         self.private('/artistes')
