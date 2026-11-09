@@ -53,7 +53,7 @@ def allowed_url(url):
     parsed = urlsplit(url)
     host = parsed.hostname or ''
     if (parsed.scheme != 'https' or parsed.port not in (None, 443) or parsed.username or parsed.password
-            or not (host in ('musicbrainz.org', 'coverartarchive.org', 'archive.org') or host.endswith('.archive.org'))):
+            or not (host in ('musicbrainz.org', 'coverartarchive.org', 'archive.org', 'api.deezer.com', 'cdn-images.dzcdn.net', 'cdns-images.dzcdn.net', 'e-cdns-images.dzcdn.net') or host.endswith('.archive.org'))):
         raise Skip('Hôte de pochette non autorisé.')
 
 
@@ -123,7 +123,59 @@ def select_recordings(data, artist, title):
     return matches
 
 
+def find_deezer_cover(artist, title, album=""):
+    artist, title, album = (without_tuning(value) for value in (artist, title, album))
+    # Plain text search also works when Deezer's structured track query returns nothing.
+    raw = fetch('https://api.deezer.com/search?' + urlencode({'q': f'{artist} {title}', 'limit': 25}))
+    data = json.loads(raw) if raw else {}
+    if data.get('error'):
+        raise Retry('Recherche Deezer temporairement indisponible.')
+    tracks = sorted(data.get('data', []), key=lambda track:
+                    0 if album and cover_key((track.get('album') or {}).get('title', '')) == cover_key(album) else 1)
+    for track in tracks:
+        release = track.get('album') or {}
+        if (cover_key(track.get('artist', {}).get('name', '')) != cover_key(artist)
+                or cover_key(track.get('title', '')) != cover_key(title)):
+            continue
+        exact_album = album and cover_key(release.get('title', '')) == cover_key(album)
+        if not exact_album and re.search(r'\b(live|remix|karaoke|tribute|compilation|best of|greatest hits)\b',
+                                         cover_key(release.get('title', ''))):
+            continue
+        url = release.get('cover_xl') or release.get('cover_big')
+        album_id = str(release.get('id', ''))
+        if not url or not album_id.isdigit():
+            continue
+        raw = fetch(url, limit=8_000_000)
+        if raw:
+            images(raw)  # Reject invalid images before trying another provider.
+            return raw, f'https://www.deezer.com/album/{album_id}'
+    raise Skip('Aucune pochette Deezer correspondant aux métadonnées.')
+
+
 def find_cover(artist, title, album=""):
+    deadline = FETCH_DEADLINE.get()
+    transient = False
+    for provider in (find_deezer_cover, find_musicbrainz_cover):
+        # Reserve time for the second source within Hasard's short search budget.
+        remaining = deadline - time.monotonic() if deadline is not None else 30
+        if remaining <= 0:
+            raise Retry('Délai de recherche de jaquette dépassé.')
+        budget = min(5, remaining / 2) if provider is find_deezer_cover else remaining
+        token = FETCH_DEADLINE.set(time.monotonic() + budget)
+        try:
+            return provider(artist, title, album)
+        except Retry:
+            transient = True
+        except (Skip, ValueError, TypeError, KeyError, OSError):
+            pass
+        finally:
+            FETCH_DEADLINE.reset(token)
+    if transient:
+        raise Retry('Services de pochettes temporairement indisponibles.')
+    raise Skip('Aucune pochette correspondant aux métadonnées disponible.')
+
+
+def find_musicbrainz_cover(artist, title, album=""):
     artist, title, album = (without_tuning(value) for value in (artist, title, album))
     query = f'recording:"{quote_query(title)}" AND artist:"{quote_query(artist)}"'
     if album:

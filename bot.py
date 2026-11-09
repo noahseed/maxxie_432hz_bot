@@ -6,6 +6,7 @@ import logging
 import os
 import sqlite3
 import socket
+import shutil
 import threading
 from http.client import HTTPSConnection, HTTPException
 import signal
@@ -171,12 +172,17 @@ class Bot:
         if not isinstance(self.background, TaskStore):
             return
         counts, recent = self.background.summary()
-        lines = ["État du bot", f"En attente : {counts.get('pending', 0)}",
+        lines = ["Administration — Maxxie 432Hz", f"En attente : {counts.get('pending', 0)}",
                  f"En cours : {counts.get('running', 0)}", f"Terminées : {counts.get('done', 0)}",
                  f"Échouées : {counts.get('failed', 0)}", f"Incertaines : {counts.get('uncertain', 0)}"]
         if recent:
             lines.append("Dernières tâches à vérifier :")
             lines.extend(f"#{task_id} — {kind} : {status}" for task_id, kind, status in recent)
+        try:
+            disk = shutil.disk_usage(os.environ.get("COVERS_DIR", "/var/lib/maxxie-bot"))
+            lines.append(f"Disque VPS : {disk.free / 2**30:.1f} Go libres sur {disk.total / 2**30:.1f} Go")
+        except OSError:
+            lines.append("Espace disque indisponible.")
         marker = self.backup_dir / "latest.json" if self.backup_dir else None
         if marker and marker.exists():
             try:
@@ -200,9 +206,15 @@ class Bot:
             if progress is not None:
                 with self.background.lock:
                     total = self.background.db.execute("SELECT count(*) FROM music WHERE group_id=?", (self.group_id,)).fetchone()[0]
+                    artwork = self.background.db.execute("SELECT count(*) FROM music m JOIN music_artwork a USING(group_id,message_id) WHERE m.group_id=?", (self.group_id,)).fetchone()[0]
                 examined = sum(progress.get(status, 0) for status in ("done", "skipped", "failed", "exhausted", "uncertain"))
-                lines.extend([f"Jaquettes : {examined}/{total} morceaux examinés",
-                              f"Remplacées : {progress.get('done', 0)} ; introuvables/non traitables : {progress.get('skipped', 0)}",
+                active = sum(progress.get(status, 0) for status in ("pending", "preparing", "fetching", "applying"))
+                waiting = max(0, total - examined - active)
+                lines.extend([f"Catalogue : {total} morceaux ; pochettes en base : {artwork}",
+                              f"Pochettes absentes de la base : {max(0, total - artwork)}",
+                              f"Jaquettes : {examined}/{total} morceaux examinés",
+                              f"Jamais examinés : {waiting} ; traitement en cours ou à vérifier : {active}",
+                              f"Remplacées : {progress.get('done', 0)} ; examinés sans remplacement : {progress.get('skipped', 0)}",
                               f"Erreurs à retenter : {progress.get('failed', 0)} ; échecs après 3 tentatives : {progress.get('exhausted', 0)}",
                               f"Pochettes incertaines (sans relance) : {progress.get('uncertain', 0)}"])
         except DATABASE_ERRORS:
@@ -427,6 +439,7 @@ class Bot:
                           if self.chat_type == "channel" else
                           "Pour cataloguer un ancien MP3 : répondez à son message dans le groupe avec /indexer."])
         if user_id == self.owner_user_id and self.owner_user_id:
+            lines.append("/admin — tableau de bord du propriétaire")
             lines.append("/statut — état du bot et des sauvegardes (propriétaire uniquement)")
             lines.append("/update — vérifier les mises à jour du VPS (propriétaire uniquement)")
         self.action("help", "sendMessage", chat_id=chat_id, text="\n".join(lines),
@@ -756,7 +769,7 @@ class Bot:
                     self.action("vps-check-denied", "sendMessage", chat_id=chat["id"],
                                 text="Cette commande est réservée au propriétaire du bot.")
                 return
-            if command in ("/statut", f"/statut@{self.username.lower()}"):
+            if command in ("/admin", f"/admin@{self.username.lower()}", "/statut", f"/statut@{self.username.lower()}"):
                 self.show_status(chat["id"], user.get("id"))
                 return
             if command in ("/432hz", f"/432hz@{self.username.lower()}"):
