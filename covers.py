@@ -53,7 +53,7 @@ def allowed_url(url):
     parsed = urlsplit(url)
     host = parsed.hostname or ''
     if (parsed.scheme != 'https' or parsed.port not in (None, 443) or parsed.username or parsed.password
-            or not (host in ('musicbrainz.org', 'coverartarchive.org', 'archive.org', 'api.deezer.com', 'cdn-images.dzcdn.net', 'cdns-images.dzcdn.net', 'e-cdns-images.dzcdn.net') or host.endswith('.archive.org'))):
+            or not (host in ('musicbrainz.org', 'coverartarchive.org', 'archive.org', 'api.deezer.com', 'www.theaudiodb.com', 'theaudiodb.com', 'r2.theaudiodb.com', 'cdn-images.dzcdn.net', 'cdns-images.dzcdn.net', 'e-cdns-images.dzcdn.net') or host.endswith('.archive.org'))):
         raise Skip('Hôte de pochette non autorisé.')
 
 
@@ -419,6 +419,10 @@ class CoverBatch:
                 self.db.execute('DELETE FROM temporary_messages WHERE message_id=?', (mid,))
 
     def process(self, mid, track_key):
+        with self.catalogue.lock:
+            manual = self.catalogue.db.execute("SELECT 1 FROM music_artwork WHERE group_id=? AND message_id=? AND source_url LIKE 'manual:%'", (self.destination,mid)).fetchone()
+        if manual:
+            raise Skip('Pochette manuelle protégée.')
         artist, title = json.loads(track_key)
         if not artist or not title:
             raise Skip('Artiste ou titre absent.')

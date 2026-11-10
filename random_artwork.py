@@ -115,6 +115,10 @@ class RandomArtwork:
                                             (self.destination, mid)).fetchone()
             if not row:
                 return None
+            with self.store.lock:
+                manual = self.store.db.execute("SELECT jpeg FROM music_artwork WHERE group_id=? AND message_id=? AND source_url LIKE 'manual:%'", (self.destination,mid)).fetchone()
+            if manual:
+                return bytes(manual[0])
             artist, key, unique = row
             try:
                 source = self.cached_source(mid, unique)

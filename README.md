@@ -419,3 +419,17 @@ Le JPEG retenu est compressé et enregistré dans `music_artwork` ; le MP3 tempo
 ### Tableau de bord propriétaire
 
 En privé, `/admin` (ou `/statut`) affiche les tâches, les erreurs, la dernière sauvegarde vérifiée, l’espace disque, le nombre de pochettes conservées et les recherches examinées sans remplacement. Une recherche sans résultat n’est pas un morceau en attente. La commande est réservée au propriétaire.
+
+### Passage complémentaire TheAudioDB
+
+`audiodb_covers.py` relance uniquement les morceaux sans pochette en base, en excluant les résultats Telegram incertains. Il utilise l’API publique TheAudioDB (clé de démonstration 123), vérifie l’artiste et le titre puis télécharge la pochette de l’album identifié. Les appels API sont espacés d’au moins 2,2 secondes. Le traitement réutilise les contrôles, le verrou, les rapports privés et le nettoyage de `covers.py` ; il ne change pas l’ordre Deezer/MusicBrainz des recherches habituelles. Exécuter avec le même environnement et le même utilisateur que `maxxie-covers.service`, sans traitement concurrent.
+
+Source : [TheAudioDB, documentation et limites](https://www.theaudiodb.com/free_music_api).
+
+### Pochettes manuelles (propriétaire)
+
+En privé : `/pochette`, transférez le MP3 depuis le canal, puis envoyez sa pochette en photo ou fichier JPEG/PNG. `/annuler` quitte ce parcours. Le bot modifie le message existant, conserve le JPEG en base et supprime les fichiers temporaires. La source `manual:owner` protège l’image des traitements automatiques et la privilégie dans Hasard. La limite de téléchargement Telegram de 20 Mo reste applicable. Si le résultat de la modification est incertain, vérifiez le canal avant une nouvelle tentative explicite ; aucun renvoi automatique n’est effectué. La session est conservée en base après redémarrage.
+
+### Abonnement au canal obligatoire
+
+En production, les messages privés et les boutons du bot nécessitent un abonnement actif au canal. Le bot vérifie `getChatMember` avant chaque interaction : les membres, administrateurs et créateurs passent ; les non-abonnés voient les boutons « Rejoindre le canal » et « Vérifier mon accès ». Après abonnement, la vérification ouvre l’accueil. Quitter le canal bloque à nouveau l’accès. Le propriétaire reste exempté pour la maintenance. Une panne de vérification bloque temporairement l’accès sans accorder d’autorisation. Le bot doit rester administrateur du canal. `REQUIRE_CHANNEL_MEMBERSHIP=0` permet de désactiver cette restriction ; elle est activée par défaut au démarrage.

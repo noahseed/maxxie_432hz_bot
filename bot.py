@@ -139,7 +139,7 @@ class Telegram:
 
 class Bot:
     def __init__(self, api, username, group_id, group_url, rules, admin_ids=(), moderator_ids=(),
-                 notify_chat_id=None, visitors=None, welcome=None, owner_user_id=None, backup_dir=None, chat_type="supergroup"):
+                 notify_chat_id=None, visitors=None, welcome=None, owner_user_id=None, backup_dir=None, chat_type="supergroup", require_membership=False):
         self.api = api
         self.username = username
         self.group_id = str(group_id)
@@ -158,6 +158,29 @@ class Bot:
         self.backup_dir = Path(backup_dir) if backup_dir else None
         self.ai = None
         self.random_artwork = None
+        self.manual_covers = None
+        self.require_membership = require_membership
+
+    def allow_subscriber(self, chat_id, user_id):
+        if not self.require_membership or (self.owner_user_id and user_id == self.owner_user_id):
+            return True
+        if not user_id or user_id != chat_id:
+            return False
+        unavailable = False
+        try:
+            member = self.api.call("getChatMember", chat_id=self.group_id, user_id=user_id)
+            status = member.get("status")
+            if status in ("member", "administrator", "creator") or (status == "restricted" and member.get("is_member") is True):
+                return True
+        except TelegramError:
+            unavailable = True
+        self.action("subscription-required", "sendMessage", chat_id=chat_id,
+                    text=("La vérification d’abonnement est temporairement indisponible. Réessayez dans un instant."
+                          if unavailable else "Pour utiliser le bot, rejoignez d’abord notre canal, puis appuyez sur « Vérifier mon accès »."),
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "Rejoindre le canal 🎵", "url": self.group_url}],
+                        [{"text": "Vérifier mon accès ✅", "callback_data": "check_subscription"}]]})
+        return False
 
     def action(self, step, method, **params):
         if isinstance(self.api, JournalAPI):
@@ -439,6 +462,7 @@ class Bot:
                           if self.chat_type == "channel" else
                           "Pour cataloguer un ancien MP3 : répondez à son message dans le groupe avec /indexer."])
         if user_id == self.owner_user_id and self.owner_user_id:
+            lines.append("/pochette — corriger une pochette manuellement ; /annuler pour quitter")
             lines.append("/admin — tableau de bord du propriétaire")
             lines.append("/statut — état du bot et des sauvegardes (propriétaire uniquement)")
             lines.append("/update — vérifier les mises à jour du VPS (propriétaire uniquement)")
@@ -697,7 +721,11 @@ class Bot:
             chat = callback.get("message", {}).get("chat", {})
             data = callback.get("data", "")
             if chat.get("type") == "private" and callback.get("from", {}).get("id", chat["id"]) == chat["id"]:
-                if data.startswith("vps-reboot:"):
+                if not self.allow_subscriber(chat["id"], callback.get("from", {}).get("id", chat["id"])):
+                    return
+                if data == "check_subscription":
+                    self.private_welcome(chat["id"])
+                elif data.startswith("vps-reboot:"):
                     if self.owner_user_id and chat["id"] == self.owner_user_id:
                         from vps_updates import request_upgrade
                         if request_upgrade(data[len("vps-reboot:"):], reboot=True):
@@ -758,6 +786,16 @@ class Bot:
             user = message.get("from", {})
             parts = message.get("text", "").split(maxsplit=1)
             command = parts[0].lower() if parts else ""
+            if not self.allow_subscriber(chat["id"], user.get("id")):
+                if command.split("@")[0] == "/start":
+                    self.later(self.notify_new_visitor, user)
+                return
+            if self.manual_covers and user.get("id") == self.owner_user_id and chat["id"] == self.owner_user_id:
+                if self.manual_covers.handle(message, lambda text: self.action("manual-cover-reply", "sendMessage", chat_id=chat["id"], text=text)):
+                    return
+            if command.split("@")[0] == "/pochette":
+                self.action("manual-cover-denied", "sendMessage", chat_id=chat["id"], text="Cette commande est réservée au propriétaire du bot.")
+                return
             if command in ("/update", f"/update@{self.username.lower()}"):
                 if (self.owner_user_id and user.get("id") == self.owner_user_id
                         and chat["id"] == self.owner_user_id):
@@ -936,13 +974,16 @@ def main():
         bot = Bot(journal, username, group_id, group_url, rules, admin_ids, moderator_ids,
                   int(notify_chat_id) if notify_chat_id else None, visitors, welcome,
                   int(owner_user_id) if owner_user_id else None,
-                  os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"), chat_type=chat_type)
+                  os.environ.get("BACKUP_DIR", "/var/lib/maxxie-bot/backups"), chat_type=chat_type,
+                  require_membership=os.environ.get("REQUIRE_CHANNEL_MEMBERSHIP", "1") == "1")
         bot.background = store
         from openai_chat import OpenAIChat
         bot.ai = OpenAIChat.from_environment()
         from random_artwork import RandomArtwork
         bot.random_artwork = RandomArtwork(api, store, group_id, bot.owner_user_id,
                                            os.environ.get("COVERS_DIR", "/var/lib/maxxie-bot/covers"))
+        from manual_covers import ManualCovers
+        bot.manual_covers = ManualCovers(api, store, group_id, os.environ.get("COVERS_DIR", "/var/lib/maxxie-bot/covers"))
         def handle_task(kind, payload):
             if kind == "update":
                 bot.handle(payload)
